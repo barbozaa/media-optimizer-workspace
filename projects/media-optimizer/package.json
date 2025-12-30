@@ -1,6 +1,6 @@
 {
-  "name": "@ngx-core/media-optimizer",
-  "version": "1.0.0",
+  "name": "ngx-media-optimizer",
+  "version": "1.0.1",
   "description": "Framework-agnostic image optimization library with parallel processing, format conversion, and compression. Works with Angular, React, Vue, and vanilla JavaScript.",
   "keywords": [
     "angular",
@@ -19,12 +19,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/barboza/media-optimizer"
+    "url": "https://github.com/barbozaa/media-optimizer-workspace"
   },
   "bugs": {
-    "url": "https://github.com/barboza/media-optimizer/issues"
+    "url": "https://github.com/barbozaa/media-optimizer-workspace/issues"
   },
-  "homepage": "https://github.com/barboza/media-optimizer#readme",
+  "homepage": "https://github.com/barbozaa/media-optimizer-workspace#readme",
   "peerDependencies": {
     "@angular/common": "^18.0.0 || ^19.0.0 || ^20.0.0 || ^21.0.0",
     "@angular/core": "^18.0.0 || ^19.0.0 || ^20.0.0 || ^21.0.0"

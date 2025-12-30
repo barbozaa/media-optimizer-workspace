@@ -3,9 +3,9 @@ import commonjs from '@rollup/plugin-commonjs';
 import terser from '@rollup/plugin-terser';
 
 export default {
-  input: 'dist/media-optimizer/fesm2022/ngx-core-media-optimizer.mjs',
+  input: 'dist/media-optimizer/fesm2022/ngx-media-optimizer.mjs',
   output: {
-    file: 'dist/media-optimizer/fesm2022/ngx-core-media-optimizer.mjs',
+    file: 'dist/media-optimizer/fesm2022/ngx-media-optimizer.mjs',
     format: 'es',
     sourcemap: true
   },
