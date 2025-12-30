@@ -1,0 +1,36 @@
+{
+  "name": "@ngx-core/media-optimizer",
+  "version": "1.0.0",
+  "description": "Framework-agnostic image optimization library with parallel processing, format conversion, and compression. Works with Angular, React, Vue, and vanilla JavaScript.",
+  "keywords": [
+    "angular",
+    "react",
+    "vue",
+    "webp",
+    "image-compression",
+    "media-optimizer",
+    "browser-image-compression",
+    "image-optimization",
+    "framework-agnostic",
+    "typescript",
+    "image-converter"
+  ],
+  "author": "Barboza",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/barboza/media-optimizer"
+  },
+  "bugs": {
+    "url": "https://github.com/barboza/media-optimizer/issues"
+  },
+  "homepage": "https://github.com/barboza/media-optimizer#readme",
+  "peerDependencies": {
+    "@angular/common": "^18.0.0 || ^19.0.0 || ^20.0.0 || ^21.0.0",
+    "@angular/core": "^18.0.0 || ^19.0.0 || ^20.0.0 || ^21.0.0"
+  },
+  "sideEffects": false,
+  "devDependencies": {
+    "browser-image-compression": "^2.0.2"
+  }
+}

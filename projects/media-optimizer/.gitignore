@@ -1,0 +1,21 @@
+# Build outputs
+dist/
+tmp/
+out-tsc/
+
+# Test coverage
+coverage/
+
+# Node modules
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
