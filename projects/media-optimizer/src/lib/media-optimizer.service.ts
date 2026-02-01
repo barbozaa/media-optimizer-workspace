@@ -7,7 +7,7 @@ import imageCompression from 'browser-image-compression';
  * Image formats supported by the service
  * @public
  */
-export type ImageFormat = 'webp' | 'jpeg' | 'png';
+export type ImageFormat = 'webp' | 'jpeg' | 'png' | 'avif';
 
 /**
  * Detailed image information
@@ -539,6 +539,166 @@ export class ImageConverterService {
   }
 
   // ============================================================================
+  // PUBLIC API - STATE MANAGEMENT
+  // ============================================================================
+
+  /**
+   * Removes a specific image from the state by its ID.
+   * 
+   * Automatically revokes blob URLs to prevent memory leaks and notifies
+   * all listeners of the state change.
+   * 
+   * @param id - Unique identifier of the image to remove
+   * 
+   * @example
+   * ```typescript
+   * // Remove a specific image
+   * service.removeImage('abc-123-def');
+   * 
+   * // The image is removed and URLs are cleaned up
+   * console.log(service.images); // Image no longer in array
+   * ```
+   * 
+   * @public
+   */
+  removeImage(id: string): void {
+    const imageToRemove = this._images.find(img => img.id === id);
+    
+    if (imageToRemove) {
+      this.revokeImageUrls(imageToRemove);
+      this._images = this._images.filter(img => img.id !== id);
+      this.notifyImagesChange();
+    }
+  }
+
+  /**
+   * Removes all images from the state.
+   * 
+   * Cleans up all blob URLs to prevent memory leaks and resets the state
+   * to its initial empty state.
+   * 
+   * @example
+   * ```typescript
+   * // Clear all images
+   * service.removeAllImages();
+   * 
+   * console.log(service.images.length); // 0
+   * console.log(service.completedCount); // 0
+   * ```
+   * 
+   * @public
+   */
+  removeAllImages(): void {
+    this._images.forEach(img => this.revokeImageUrls(img));
+    this._images = [];
+    this.notifyImagesChange();
+  }
+
+  /**
+   * Removes only successfully completed images from the state.
+   * 
+   * Keeps pending, processing, and error images in the state. Useful for
+   * clearing processed images while retaining failed ones for retry.
+   * 
+   * @example
+   * ```typescript
+   * // Remove only completed images
+   * service.clearCompleted();
+   * 
+   * // Only pending/processing/error images remain
+   * const remaining = service.images.filter(img => img.status !== 'completed');
+   * ```
+   * 
+   * @public
+   */
+  clearCompleted(): void {
+    this._images.forEach(img => {
+      if (img.status === 'completed') {
+        this.revokeImageUrls(img);
+      }
+    });
+    this._images = this._images.filter(img => img.status !== 'completed');
+    this.notifyImagesChange();
+  }
+
+  // ============================================================================
+  // PUBLIC API - DOWNLOAD
+  // ============================================================================
+
+  /**
+   * Downloads a specific compressed image by its ID.
+   * 
+   * Creates a temporary download link and triggers the download. Only works
+   * for images with status 'completed'.
+   * 
+   * @param id - Unique identifier of the image to download
+   * 
+   * @example
+   * ```typescript
+   * // Download a specific image
+   * service.downloadImage('abc-123-def');
+   * ```
+   * 
+   * @public
+   */
+  downloadImage(id: string): void {
+    const image = this._images.find(img => img.id === id);
+    
+    if (!image) {
+      console.warn(`[ImageConverter] Image with id ${id} not found`);
+      return;
+    }
+    
+    if (image.status !== 'completed') {
+      console.warn(`[ImageConverter] Image ${image.name} is not yet completed`);
+      return;
+    }
+    
+    if (!image.compressedUrl) {
+      console.warn(`[ImageConverter] No compressed image available for ${image.name}`);
+      return;
+    }
+    
+    const link = document.createElement('a');
+    link.href = image.compressedUrl;
+    link.download = image.name;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  /**
+   * Downloads all successfully compressed images.
+   * 
+   * Iterates through all completed images and triggers individual downloads.
+   * Note: Some browsers may block multiple simultaneous downloads.
+   * 
+   * @example
+   * ```typescript
+   * // Download all completed images
+   * service.downloadAllImages();
+   * ```
+   * 
+   * @public
+   */
+  downloadAllImages(): void {
+    const completedImages = this.completedImages;
+    
+    if (completedImages.length === 0) {
+      console.warn('[ImageConverter] No completed images to download');
+      return;
+    }
+    
+    completedImages.forEach((image, index) => {
+      // Stagger downloads to avoid browser blocking
+      setTimeout(() => {
+        this.downloadImage(image.id);
+      }, index * 100);
+    });
+  }
+
+  // ============================================================================
   // PRIVATE METHODS - PROCESSING
   // ============================================================================
   
@@ -721,6 +881,7 @@ export class ImageConverterService {
    * @private
    */
   private detectImageFormat(mimeType: string): ImageFormat {
+    if (mimeType.includes('avif')) return 'avif';
     if (mimeType.includes('webp')) return 'webp';
     if (mimeType.includes('png')) return 'png';
     return 'jpeg';

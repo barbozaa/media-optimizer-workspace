@@ -562,4 +562,640 @@ describe('ImageUtilsService', () => {
       expect(service.formatBytes(1536, -1)).toBe('2 KB');
     });
   });
+
+  describe('Validation', () => {
+    describe('validateDimensions()', () => {
+      it('should return true for valid dimensions', async () => {
+        const mockImage: Partial<HTMLImageElement> = {
+          width: 1920,
+          height: 1080,
+          onload: null,
+          onerror: null,
+          src: ''
+        };
+
+        global.Image = function() { return mockImage as HTMLImageElement; } as unknown as typeof Image;
+
+        const promise = service.validateDimensions(mockFile, 100, 100, 4096, 4096);
+        
+        setTimeout(() => mockImage.onload && mockImage.onload.call(mockImage as any, new Event('load')), 0);
+
+        const result = await promise;
+        expect(result).toBe(true);
+      });
+
+      it('should return false for width below minimum', async () => {
+        const mockImage: Partial<HTMLImageElement> = {
+          width: 50,
+          height: 1080,
+          onload: null,
+          onerror: null,
+          src: ''
+        };
+
+        global.Image = function() { return mockImage as HTMLImageElement; } as unknown as typeof Image;
+
+        const promise = service.validateDimensions(mockFile, 100, 100, 4096, 4096);
+        
+        setTimeout(() => mockImage.onload && mockImage.onload.call(mockImage as any, new Event('load')), 0);
+
+        const result = await promise;
+        expect(result).toBe(false);
+      });
+
+      it('should return false for width above maximum', async () => {
+        const mockImage: Partial<HTMLImageElement> = {
+          width: 5000,
+          height: 1080,
+          onload: null,
+          onerror: null,
+          src: ''
+        };
+
+        global.Image = function() { return mockImage as HTMLImageElement; } as unknown as typeof Image;
+
+        const promise = service.validateDimensions(mockFile, 100, 100, 4096, 4096);
+        
+        setTimeout(() => mockImage.onload && mockImage.onload.call(mockImage as any, new Event('load')), 0);
+
+        const result = await promise;
+        expect(result).toBe(false);
+      });
+
+      it('should return false on error', async () => {
+        const mockImage: Partial<HTMLImageElement> = {
+          width: 0,
+          height: 0,
+          onload: null,
+          onerror: null,
+          src: ''
+        };
+
+        global.Image = function() { return mockImage as HTMLImageElement; } as unknown as typeof Image;
+
+        const promise = service.validateDimensions(mockFile, 100, 100, 4096, 4096);
+        
+        setTimeout(() => mockImage.onerror && mockImage.onerror.call(mockImage as any, new Event('error')), 0);
+
+        const result = await promise;
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('validateFileSize()', () => {
+      it('should return true for valid file size', () => {
+        const file = new File([new Uint8Array(1024 * 1024 * 2)], 'test.jpg');
+        expect(service.validateFileSize(file, 5)).toBe(true);
+      });
+
+      it('should return false for file exceeding max size', () => {
+        const file = new File([new Uint8Array(1024 * 1024 * 10)], 'test.jpg');
+        expect(service.validateFileSize(file, 5)).toBe(false);
+      });
+
+      it('should return false for file below min size', () => {
+        const file = new File([new Uint8Array(1024 * 50)], 'test.jpg');
+        expect(service.validateFileSize(file, 5, 0.1)).toBe(false);
+      });
+
+      it('should return true for file within min and max range', () => {
+        const file = new File([new Uint8Array(1024 * 1024 * 2)], 'test.jpg');
+        expect(service.validateFileSize(file, 5, 0.1)).toBe(true);
+      });
+    });
+
+    describe('validateBatch()', () => {
+      it('should validate a batch of files with all valid', async () => {
+        const file1 = new File([new Uint8Array(1024 * 100)], 'test1.jpg', { type: 'image/jpeg' });
+        const file2 = new File([new Uint8Array(1024 * 200)], 'test2.png', { type: 'image/png' });
+
+        const results = await service.validateBatch([file1, file2], {
+          maxSizeMB: 1,
+          allowedFormats: ['image/jpeg', 'image/png']
+        });
+
+        expect(results).toHaveLength(2);
+        expect(results[0].valid).toBe(true);
+        expect(results[1].valid).toBe(true);
+        expect(results[0].errors).toHaveLength(0);
+        expect(results[1].errors).toHaveLength(0);
+      });
+
+      it('should return errors for invalid file type', async () => {
+        const file = new File([new Uint8Array(1024)], 'test.pdf', { type: 'application/pdf' });
+
+        const results = await service.validateBatch([file], {
+          allowedFormats: ['image/jpeg', 'image/png']
+        });
+
+        expect(results[0].valid).toBe(false);
+        expect(results[0].errors.length).toBeGreaterThan(0);
+        expect(results[0].errors[0]).toContain('Invalid format');
+      });
+
+      it('should return errors for file size exceeding limit', async () => {
+        const file = new File([new Uint8Array(1024 * 1024 * 10)], 'test.jpg', { type: 'image/jpeg' });
+
+        const results = await service.validateBatch([file], {
+          maxSizeMB: 5
+        });
+
+        expect(results[0].valid).toBe(false);
+        expect(results[0].errors.some(e => e.includes('File size'))).toBe(true);
+      });
+
+      it('should validate dimensions when options provided', async () => {
+        const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
+
+        // Mock URL.createObjectURL
+        global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+        global.URL.revokeObjectURL = vi.fn();
+
+        let savedOnload: ((event: Event) => void) | null = null;
+
+        const mockImage: any = {
+          width: 5000,
+          height: 5000,
+          set onload(handler: any) {
+            savedOnload = handler;
+          },
+          get onload() {
+            return savedOnload;
+          },
+          set onerror(_handler: any) {},
+          set src(_value: string) {
+            // Trigger onload when src is set
+            queueMicrotask(() => {
+              if (savedOnload) {
+                savedOnload(new Event('load'));
+              }
+            });
+          }
+        };
+
+        global.Image = function() { return mockImage; } as unknown as typeof Image;
+
+        const results = await service.validateBatch([file], {
+          maxWidth: 4096,
+          maxHeight: 4096
+        });
+
+        expect(results[0].valid).toBe(false);
+        expect(results[0].errors.some(e => e.includes('Dimensions'))).toBe(true);
+      });
+
+      it('should return error for invalid image without allowedFormats', async () => {
+        const file = new File([new Uint8Array(1024)], 'test.txt', { type: 'text/plain' });
+
+        const results = await service.validateBatch([file], {
+          maxSizeMB: 5
+        });
+
+        expect(results[0].valid).toBe(false);
+        expect(results[0].errors.some(e => e.includes('Not a valid image file'))).toBe(true);
+      });
+
+      it('should return error when dimension validation throws', async () => {
+        const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
+
+        // Mock getImageDimensions to throw
+        vi.spyOn(service as any, 'getImageDimensions').mockRejectedValue(new Error('Failed to load'));
+
+        const results = await service.validateBatch([file], {
+          maxWidth: 4096,
+          maxHeight: 4096
+        });
+
+        expect(results[0].valid).toBe(false);
+        expect(results[0].errors.some(e => e.includes('Failed to read image dimensions'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Image Analysis', () => {
+    describe('hasTransparency()', () => {
+      beforeEach(() => {
+        global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+        global.URL.revokeObjectURL = vi.fn();
+      });
+
+      it('should return false for JPEG (no alpha support)', async () => {
+        const jpegFile = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
+        const result = await service.hasTransparency(jpegFile);
+        expect(result).toBe(false);
+      });
+
+      it('should detect transparency in PNG', async () => {
+        const pngFile = new File([mockBlob], 'test.png', { type: 'image/png' });
+
+        const mockCanvas = {
+          width: 0,
+          height: 0,
+          getContext: vi.fn(() => ({
+            drawImage: vi.fn(),
+            getImageData: vi.fn(() => ({
+              data: new Uint8ClampedArray([255, 0, 0, 128, 0, 255, 0, 255])
+            }))
+          }))
+        };
+
+        vi.spyOn(document, 'createElement').mockReturnValue(mockCanvas as any);
+        
+        // Mock URL.createObjectURL
+        global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+        global.URL.revokeObjectURL = vi.fn();
+
+        let savedOnload: ((event: Event) => void) | null = null;
+
+        const mockImage: any = {
+          width: 2,
+          height: 1,
+          set onload(handler: any) {
+            savedOnload = handler;
+          },
+          get onload() {
+            return savedOnload;
+          },
+          set onerror(_handler: any) {},
+          set src(_value: string) {
+            // Trigger onload when src is set
+            queueMicrotask(() => {
+              if (savedOnload) {
+                savedOnload(new Event('load'));
+              }
+            });
+          }
+        };
+
+        global.Image = function() { return mockImage; } as unknown as typeof Image;
+
+        const result = await service.hasTransparency(pngFile);
+        expect(result).toBe(true);
+      });
+
+      it('should return false when no transparency found', async () => {
+        const pngFile = new File([mockBlob], 'test.png', { type: 'image/png' });
+
+        const mockCanvas = {
+          width: 0,
+          height: 0,
+          getContext: vi.fn(() => ({
+            drawImage: vi.fn(),
+            getImageData: vi.fn(() => ({
+              data: new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255])
+            }))
+          }))
+        };
+
+        vi.spyOn(document, 'createElement').mockReturnValue(mockCanvas as any);
+        
+        // Mock URL.createObjectURL
+        global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+        global.URL.revokeObjectURL = vi.fn();
+
+        let savedOnload: ((event: Event) => void) | null = null;
+
+        const mockImage: any = {
+          width: 2,
+          height: 1,
+          set onload(handler: any) {
+            savedOnload = handler;
+          },
+          get onload() {
+            return savedOnload;
+          },
+          set onerror(_handler: any) {},
+          set src(_value: string) {
+            // Trigger onload when src is set
+            queueMicrotask(() => {
+              if (savedOnload) {
+                savedOnload(new Event('load'));
+              }
+            });
+          }
+        };
+
+        global.Image = function() { return mockImage; } as unknown as typeof Image;
+
+        const result = await service.hasTransparency(pngFile);
+        expect(result).toBe(false);
+      });
+
+      it('should return false when getImageDimensions throws error', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const pngFile = new File([mockBlob], 'test.png', { type: 'image/png' });
+
+        // Mock getImageDimensions to throw
+        vi.spyOn(service as any, 'getImageDimensions').mockRejectedValue(new Error('Failed to load'));
+
+        const result = await service.hasTransparency(pngFile);
+        
+        expect(result).toBe(false);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Failed to check transparency'),
+          expect.any(Error)
+        );
+      });
+
+      it('should return false when canvas context fails in hasTransparency', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const pngFile = new File([mockBlob], 'test.png', { type: 'image/png' });
+
+        // Mock getImageDimensions to return valid dimensions
+        vi.spyOn(service as any, 'getImageDimensions').mockResolvedValue({ width: 100, height: 100 });
+
+        const mockCanvas = {
+          width: 0,
+          height: 0,
+          getContext: vi.fn(() => null) // Return null to simulate failure
+        };
+
+        vi.spyOn(document, 'createElement').mockReturnValue(mockCanvas as any);
+
+        const result = await service.hasTransparency(pngFile);
+        
+        expect(result).toBe(false);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Failed to check transparency'),
+          expect.any(Error)
+        );
+      });
+    });
+
+    describe('isAnimated()', () => {
+      it('should return false for non-animatable formats', async () => {
+        const jpegFile = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
+        const result = await service.isAnimated(jpegFile);
+        expect(result).toBe(false);
+      });
+
+      it('should detect animated GIF', async () => {
+        // NETSCAPE2.0 extension marker with exact bytes as expected by the algorithm
+        // [0x21, 0xFF, 0x0B, 0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45]
+        const gifData = new Uint8Array(200); // Large enough buffer
+        
+        // Place NETSCAPE marker at position 50
+        const netscape = [0x21, 0xFF, 0x0B, 0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45];
+        netscape.forEach((byte, i) => {
+          gifData[50 + i] = byte;
+        });
+        
+        const buffer = gifData.buffer;
+        const gifFile = new File([gifData], 'test.gif', { type: 'image/gif' });
+        
+        // Mock arrayBuffer method
+        Object.defineProperty(gifFile, 'arrayBuffer', {
+          value: vi.fn().mockResolvedValue(buffer),
+          writable: true
+        });
+
+        const result = await service.isAnimated(gifFile);
+        expect(result).toBe(true);
+      });
+
+      it('should return false for static GIF', async () => {
+        const staticGif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+        const buffer = staticGif.buffer;
+        const gifFile = new File([staticGif], 'test.gif', { type: 'image/gif' });
+        
+        // Mock arrayBuffer method
+        gifFile.arrayBuffer = vi.fn().mockResolvedValue(buffer);
+
+        const result = await service.isAnimated(gifFile);
+        expect(result).toBe(false);
+      });
+
+      it('should detect animated WebP', async () => {
+        const riffHeader = new TextEncoder().encode('RIFF');
+        const webpHeader = new TextEncoder().encode('WEBP');
+        const animChunk = new TextEncoder().encode('ANIM');
+        const combined = new Uint8Array([...riffHeader, 0, 0, 0, 0, ...webpHeader, ...animChunk]);
+        const buffer = combined.buffer;
+        const webpFile = new File([combined], 'test.webp', { type: 'image/webp' });
+        
+        // Mock arrayBuffer method
+        webpFile.arrayBuffer = vi.fn().mockResolvedValue(buffer);
+
+        const result = await service.isAnimated(webpFile);
+        expect(result).toBe(true);
+      });
+
+      it('should return false on error when arrayBuffer fails', async () => {
+        const gifFile = new File([new Uint8Array(10)], 'test.gif', { type: 'image/gif' });
+        
+        // Mock arrayBuffer to reject
+        Object.defineProperty(gifFile, 'arrayBuffer', {
+          value: vi.fn().mockRejectedValue(new Error('Failed to read buffer')),
+          writable: true
+        });
+
+        const result = await service.isAnimated(gifFile);
+        expect(result).toBe(false);
+      });
+
+      it('should handle WebP files without proper RIFF header', async () => {
+        const buffer = new ArrayBuffer(50);
+        const view = new Uint8Array(buffer);
+        // Intentionally not setting proper RIFF header
+        
+        const webpFile = new File([view], 'test.webp', { type: 'image/webp' });
+        webpFile.arrayBuffer = vi.fn().mockResolvedValue(buffer);
+
+        const result = await service.isAnimated(webpFile);
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('getDominantColor()', () => {
+      it('should return dominant color as hex string', async () => {
+        const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
+
+        const mockCanvas = {
+          width: 0,
+          height: 0,
+          getContext: vi.fn(() => ({
+            drawImage: vi.fn(),
+            getImageData: vi.fn(() => ({
+              data: new Uint8ClampedArray([
+                255, 0, 0, 255,
+                255, 0, 0, 255,
+                255, 0, 0, 255,
+                0, 0, 255, 255
+              ])
+            }))
+          }))
+        };
+
+        vi.spyOn(document, 'createElement').mockReturnValue(mockCanvas as any);
+        
+        // Mock URL.createObjectURL
+        global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+        global.URL.revokeObjectURL = vi.fn();
+
+        let savedOnload: ((event: Event) => void) | null = null;
+
+        const mockImage: any = {
+          width: 2,
+          height: 2,
+          set onload(handler: any) {
+            savedOnload = handler;
+          },
+          get onload() {
+            return savedOnload;
+          },
+          set onerror(_handler: any) {},
+          set src(_value: string) {
+            // Trigger onload when src is set
+            queueMicrotask(() => {
+              if (savedOnload) {
+                savedOnload(new Event('load'));
+              }
+            });
+          }
+        };
+
+        global.Image = function() { return mockImage; } as unknown as typeof Image;
+
+        const result = await service.getDominantColor(file);
+        expect(result).toMatch(/^#[0-9A-F]{6}$/);
+      });
+
+      it('should skip transparent pixels when calculating dominant color', async () => {
+        const file = new File([mockBlob], 'test.png', { type: 'image/png' });
+
+        // Create array with 20 pixels (80 bytes)
+        // step=4 means we sample pixels 0, 4, 8, 12, 16
+        const pixelData = new Uint8ClampedArray(80);
+        
+        // Pixel 0: opaque red
+        pixelData[0] = 255; pixelData[1] = 0; pixelData[2] = 0; pixelData[3] = 255;
+        
+        // Pixels 1-3: some other colors (won't be sampled)
+        for (let i = 4; i < 16; i += 4) {
+          pixelData[i] = 0; pixelData[i+1] = 255; pixelData[i+2] = 0; pixelData[i+3] = 255;
+        }
+        
+        // Pixel 4: transparent (THIS SHOULD BE SKIPPED with continue)
+        pixelData[16] = 100; pixelData[17] = 100; pixelData[18] = 100; pixelData[19] = 50; // alpha < 128
+        
+        // Pixels 5-7: some other colors (won't be sampled)
+        for (let i = 20; i < 32; i += 4) {
+          pixelData[i] = 0; pixelData[i+1] = 0; pixelData[i+2] = 255; pixelData[i+3] = 255;
+        }
+        
+        // Pixel 8: opaque red
+        pixelData[32] = 255; pixelData[33] = 0; pixelData[34] = 0; pixelData[35] = 255;
+        
+        // Fill rest with opaque pixels
+        for (let i = 36; i < 80; i += 4) {
+          pixelData[i] = 255; pixelData[i+1] = 0; pixelData[i+2] = 0; pixelData[i+3] = 255;
+        }
+
+        const mockCanvas = {
+          width: 0,
+          height: 0,
+          getContext: vi.fn(() => ({
+            drawImage: vi.fn(),
+            getImageData: vi.fn(() => ({
+              data: pixelData
+            }))
+          }))
+        };
+
+        vi.spyOn(document, 'createElement').mockReturnValue(mockCanvas as any);
+        
+        global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+        global.URL.revokeObjectURL = vi.fn();
+
+        let savedOnload: ((event: Event) => void) | null = null;
+
+        const mockImage: any = {
+          width: 10,
+          height: 2,
+          set onload(handler: any) {
+            savedOnload = handler;
+          },
+          get onload() {
+            return savedOnload;
+          },
+          set onerror(_handler: any) {},
+          set src(_value: string) {
+            queueMicrotask(() => {
+              if (savedOnload) {
+                savedOnload(new Event('load'));
+              }
+            });
+          }
+        };
+
+        global.Image = function() { return mockImage; } as unknown as typeof Image;
+
+        const result = await service.getDominantColor(file);
+        expect(result).toMatch(/^#[0-9A-F]{6}$/);
+        // Should be red-ish since transparent pixels are skipped
+      });
+
+      it('should return black when canvas context fails', async () => {
+        const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
+
+        const mockCanvas = {
+          width: 0,
+          height: 0,
+          getContext: vi.fn(() => null) // Return null to simulate failure
+        };
+
+        vi.spyOn(document, 'createElement').mockReturnValue(mockCanvas as any);
+        
+        global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+        global.URL.revokeObjectURL = vi.fn();
+
+        let savedOnload: ((event: Event) => void) | null = null;
+
+        const mockImage: any = {
+          width: 2,
+          height: 2,
+          set onload(handler: any) {
+            savedOnload = handler;
+          },
+          get onload() {
+            return savedOnload;
+          },
+          set onerror(_handler: any) {},
+          set src(_value: string) {
+            queueMicrotask(() => {
+              if (savedOnload) {
+                savedOnload(new Event('load'));
+              }
+            });
+          }
+        };
+
+        global.Image = function() { return mockImage; } as unknown as typeof Image;
+
+        const result = await service.getDominantColor(file);
+        expect(result).toBe('#000000');
+      });
+
+      it('should return black on error', async () => {
+        const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
+
+        const mockImage: Partial<HTMLImageElement> = {
+          width: 0,
+          height: 0,
+          onload: null,
+          onerror: null,
+          src: ''
+        };
+
+        global.Image = function() { return mockImage as HTMLImageElement; } as unknown as typeof Image;
+
+        const promise = service.getDominantColor(file);
+        
+        setTimeout(() => mockImage.onerror && mockImage.onerror.call(mockImage as any, new Event('error')), 0);
+
+        const result = await promise;
+        expect(result).toBe('#000000');
+      });
+    });
+  });
 });

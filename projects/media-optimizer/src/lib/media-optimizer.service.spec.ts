@@ -348,6 +348,21 @@ describe('ImageConverterService', () => {
       expect(service.images[0].status).toBe('completed');
     });
 
+    it('should convert to avif format', async () => {
+      vi.mocked(browserImageCompression.default).mockResolvedValue(
+        new File([mockBlob], 'compressed.avif', { type: 'image/avif' })
+      );
+
+      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'avif' }));
+      
+      expect(service.images.length).toBe(1);
+      expect(service.images[0].status).toBe('completed');
+      expect(browserImageCompression.default).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ fileType: 'image/avif' })
+      );
+    });
+
     it('should accept custom quality option', async () => {
       const options: ConvertOptions = { outputFormat: 'webp', quality: 70 };
       await firstValueFrom(service.convertFormat([mockFile], options));
@@ -546,6 +561,304 @@ describe('ImageConverterService', () => {
       expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:original-url');
       expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:compressed-url');
       expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('State Management', () => {
+    it('should remove a specific image by id', () => {
+      const image1: ImageFile = {
+        id: 'id-1',
+        name: 'test1.jpg',
+        originalSize: 1000,
+        compressedSize: 500,
+        originalUrl: 'blob:url-1',
+        compressedUrl: 'blob:compressed-1',
+        status: 'completed',
+        quality: 80
+      };
+      const image2: ImageFile = {
+        id: 'id-2',
+        name: 'test2.jpg',
+        originalSize: 2000,
+        compressedSize: 1000,
+        originalUrl: 'blob:url-2',
+        compressedUrl: 'blob:compressed-2',
+        status: 'completed',
+        quality: 80
+      };
+
+      service._images = [image1, image2];
+      vi.clearAllMocks();
+
+      service.removeImage('id-1');
+
+      expect(service.images).toHaveLength(1);
+      expect(service.images[0].id).toBe('id-2');
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:url-1');
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:compressed-1');
+    });
+
+    it('should not throw when removing non-existent image', () => {
+      service._images = [];
+      
+      expect(() => service.removeImage('non-existent')).not.toThrow();
+      expect(service.images).toHaveLength(0);
+    });
+
+    it('should remove all images and clean up URLs', () => {
+      const image1: ImageFile = {
+        id: 'id-1',
+        name: 'test1.jpg',
+        originalSize: 1000,
+        compressedSize: 500,
+        originalUrl: 'blob:url-1',
+        compressedUrl: 'blob:compressed-1',
+        status: 'completed',
+        quality: 80
+      };
+      const image2: ImageFile = {
+        id: 'id-2',
+        name: 'test2.jpg',
+        originalSize: 2000,
+        compressedSize: 1000,
+        originalUrl: 'blob:url-2',
+        compressedUrl: 'blob:compressed-2',
+        status: 'pending',
+        quality: 80
+      };
+
+      service._images = [image1, image2];
+      vi.clearAllMocks();
+
+      service.removeAllImages();
+
+      expect(service.images).toHaveLength(0);
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(4);
+    });
+
+    it('should clear only completed images', () => {
+      const completed: ImageFile = {
+        id: 'id-1',
+        name: 'completed.jpg',
+        originalSize: 1000,
+        compressedSize: 500,
+        originalUrl: 'blob:url-1',
+        compressedUrl: 'blob:compressed-1',
+        status: 'completed',
+        quality: 80
+      };
+      const pending: ImageFile = {
+        id: 'id-2',
+        name: 'pending.jpg',
+        originalSize: 2000,
+        compressedSize: 0,
+        originalUrl: 'blob:url-2',
+        compressedUrl: '',
+        status: 'pending',
+        quality: 80
+      };
+      const error: ImageFile = {
+        id: 'id-3',
+        name: 'error.jpg',
+        originalSize: 3000,
+        compressedSize: 0,
+        originalUrl: 'blob:url-3',
+        compressedUrl: '',
+        status: 'error',
+        quality: 80
+      };
+
+      service._images = [completed, pending, error];
+      vi.clearAllMocks();
+
+      service.clearCompleted();
+
+      expect(service.images).toHaveLength(2);
+      expect(service.images.find(img => img.id === 'id-1')).toBeUndefined();
+      expect(service.images.find(img => img.id === 'id-2')).toBeDefined();
+      expect(service.images.find(img => img.id === 'id-3')).toBeDefined();
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+    });
+
+    it('should notify listeners when removing images', () => {
+      const callback = vi.fn();
+      service.onImagesChange(callback);
+      callback.mockClear();
+
+      const image: ImageFile = {
+        id: 'id-1',
+        name: 'test.jpg',
+        originalSize: 1000,
+        compressedSize: 500,
+        originalUrl: 'blob:url-1',
+        compressedUrl: 'blob:compressed-1',
+        status: 'completed',
+        quality: 80
+      };
+
+      service._images = [image];
+      service.removeImage('id-1');
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith([]);
+    });
+  });
+
+  describe('Download', () => {
+    beforeEach(() => {
+      // Mock DOM methods
+      document.createElement = vi.fn((tag) => {
+        if (tag === 'a') {
+          return {
+            href: '',
+            download: '',
+            style: { display: '' },
+            click: vi.fn(),
+          } as any;
+        }
+        return {} as any;
+      });
+      document.body.appendChild = vi.fn();
+      document.body.removeChild = vi.fn();
+    });
+
+    it('should download a specific image by id', () => {
+      const image: ImageFile = {
+        id: 'id-1',
+        name: 'test.jpg',
+        originalSize: 1000,
+        compressedSize: 500,
+        originalUrl: 'blob:original',
+        compressedUrl: 'blob:compressed',
+        status: 'completed',
+        quality: 80
+      };
+
+      service._images = [image];
+
+      service.downloadImage('id-1');
+
+      expect(document.createElement).toHaveBeenCalledWith('a');
+      expect(document.body.appendChild).toHaveBeenCalled();
+      expect(document.body.removeChild).toHaveBeenCalled();
+    });
+
+    it('should warn if image not found', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      service.downloadImage('non-existent');
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not found'));
+    });
+
+    it('should warn if image not completed', () => {
+      const image: ImageFile = {
+        id: 'id-1',
+        name: 'test.jpg',
+        originalSize: 1000,
+        compressedSize: 0,
+        originalUrl: 'blob:original',
+        compressedUrl: '',
+        status: 'pending',
+        quality: 80
+      };
+
+      service._images = [image];
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      service.downloadImage('id-1');
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not yet completed'));
+    });
+
+    it('should download all completed images', () => {
+      vi.useFakeTimers();
+
+      const image1: ImageFile = {
+        id: 'id-1',
+        name: 'test1.jpg',
+        originalSize: 1000,
+        compressedSize: 500,
+        originalUrl: 'blob:original-1',
+        compressedUrl: 'blob:compressed-1',
+        status: 'completed',
+        quality: 80
+      };
+      const image2: ImageFile = {
+        id: 'id-2',
+        name: 'test2.jpg',
+        originalSize: 2000,
+        compressedSize: 1000,
+        originalUrl: 'blob:original-2',
+        compressedUrl: 'blob:compressed-2',
+        status: 'completed',
+        quality: 80
+      };
+
+      service._images = [image1, image2];
+      const downloadSpy = vi.spyOn(service, 'downloadImage');
+
+      service.downloadAllImages();
+      
+      vi.runAllTimers();
+
+      expect(downloadSpy).toHaveBeenCalledTimes(2);
+      expect(downloadSpy).toHaveBeenCalledWith('id-1');
+      expect(downloadSpy).toHaveBeenCalledWith('id-2');
+
+      vi.useRealTimers();
+    });
+
+    it('should warn when no completed images to download', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      service.downloadAllImages();
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('No completed images'));
+    });
+
+    it('should not download image that is not completed', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const createElementSpy = vi.spyOn(document, 'createElement');
+
+      const processingImage: ImageFile = {
+        id: 'id-1',
+        name: 'test.jpg',
+        originalSize: 1024,
+        compressedSize: 0,
+        originalUrl: 'blob:original',
+        compressedUrl: '',
+        status: 'processing',
+        quality: 80
+      };
+
+      service._images = [processingImage];
+      service.downloadImage('id-1');
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not yet completed'));
+      expect(createElementSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not download image without compressedUrl', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const createElementSpy = vi.spyOn(document, 'createElement');
+
+      const imageNoUrl: ImageFile = {
+        id: 'id-1',
+        name: 'test.jpg',
+        originalSize: 1024,
+        compressedSize: 800,
+        originalUrl: 'blob:original',
+        compressedUrl: '', // Empty string, no compressed URL
+        status: 'completed',
+        quality: 80
+      };
+
+      service._images = [imageNoUrl];
+      service.downloadImage('id-1');
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('No compressed image available'));
+      expect(createElementSpy).not.toHaveBeenCalled();
     });
   });
 });
