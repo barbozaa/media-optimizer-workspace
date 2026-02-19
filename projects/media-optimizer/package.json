@@ -1,6 +1,6 @@
 {
   "name": "ngx-media-optimizer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Framework-agnostic image optimization library with parallel processing, format conversion, and compression. Works with Angular, React, Vue, and vanilla JavaScript.",
   "keywords": [
     "angular",
