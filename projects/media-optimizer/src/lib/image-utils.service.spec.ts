@@ -429,8 +429,9 @@ describe('ImageUtilsService', () => {
 
       const estimated = service.estimateCompressedSize(file, 80);
       
-      // For JPEG: size * (quality/100) * 0.85
-      expect(estimated).toBe(680000); // 1000000 * 0.8 * 0.85
+      // Improved algorithm uses power curve and size adjustment
+      // Expect approximately 697473 based on new formula
+      expect(estimated).toBeCloseTo(697473, -2); // Within 100 bytes
     });
 
     it('should estimate size for PNG with quality factor', () => {
@@ -440,8 +441,8 @@ describe('ImageUtilsService', () => {
 
       const estimated = service.estimateCompressedSize(file, 90);
       
-      // For PNG: size * (quality/100) * 0.75
-      expect(estimated).toBe(1350000); // 2000000 * 0.9 * 0.75
+      // Improved algorithm with power curve and size adjustment
+      expect(estimated).toBeCloseTo(1326154, -2);
     });
 
     it('should estimate size for WebP format', () => {
@@ -451,8 +452,8 @@ describe('ImageUtilsService', () => {
 
       const estimated = service.estimateCompressedSize(file, 70);
       
-      // For WebP: size * (quality/100) * 0.65
-      expect(estimated).toBe(227500); // 500000 * 0.7 * 0.65
+      // Improved algorithm with better accuracy
+      expect(estimated).toBeCloseTo(241992, -2);
     });
 
     it('should handle quality = 100', () => {
@@ -460,7 +461,8 @@ describe('ImageUtilsService', () => {
       Object.defineProperty(file, 'size', { value: 1000000 });
 
       const estimated = service.estimateCompressedSize(file, 100);
-      expect(estimated).toBe(850000); // 1000000 * 1 * 0.85
+      // Improved algorithm with size adjustment
+      expect(estimated).toBeCloseTo(833788, -2);
     });
 
     it('should handle quality = 0', () => {
@@ -488,9 +490,9 @@ describe('ImageUtilsService', () => {
 
       const quality = service.getBestQuality(file, 2); // Target 2MB
       
-      // targetBytes / (file.size * compressionFactor) * 100
-      // 2097152 / (5000000 * 0.85) * 100 = 49.36
-      expect(quality).toBeCloseTo(49, 0);
+      // Improved algorithm with inverse power curve
+      // Expected around 47 with better accuracy
+      expect(quality).toBeCloseTo(47, 0);
     });
 
     it('should return 10 as minimum quality', () => {
@@ -508,8 +510,8 @@ describe('ImageUtilsService', () => {
 
       const quality = service.getBestQuality(file, 2); // Target 2MB
       
-      // 2097152 / (4000000 * 0.75) * 100 = 69.9
-      expect(quality).toBeCloseTo(70, 0);
+      // Improved algorithm gives more accurate result
+      expect(quality).toBeCloseTo(71, 0);
     });
 
     it('should handle WebP compression factor', () => {
@@ -519,8 +521,8 @@ describe('ImageUtilsService', () => {
 
       const quality = service.getBestQuality(file, 1); // Target 1MB
       
-      // 1048576 / (3000000 * 0.65) * 100 = 53.8
-      expect(quality).toBeCloseTo(54, 0);
+      // Improved algorithm with better estimation
+      expect(quality).toBeCloseTo(50, 0);
     });
 
     it('should not exceed quality of 100', () => {
@@ -623,6 +625,8 @@ describe('ImageUtilsService', () => {
       });
 
       it('should return false on error', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        
         const mockImage: Partial<HTMLImageElement> = {
           width: 0,
           height: 0,
@@ -639,6 +643,8 @@ describe('ImageUtilsService', () => {
 
         const result = await promise;
         expect(result).toBe(false);
+        
+        consoleErrorSpy.mockRestore();
       });
     });
 
@@ -756,6 +762,8 @@ describe('ImageUtilsService', () => {
       });
 
       it('should return error when dimension validation throws', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        
         const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
 
         // Mock getImageDimensions to throw
@@ -768,6 +776,8 @@ describe('ImageUtilsService', () => {
 
         expect(results[0].valid).toBe(false);
         expect(results[0].errors.some(e => e.includes('Failed to read image dimensions'))).toBe(true);
+        
+        consoleErrorSpy.mockRestore();
       });
     });
   });
@@ -836,13 +846,28 @@ describe('ImageUtilsService', () => {
       it('should return false when no transparency found', async () => {
         const pngFile = new File([mockBlob], 'test.png', { type: 'image/png' });
 
+        // Create proper RGBA data with full alpha (no transparency)
+        // Must use ArrayBuffer to ensure proper Uint32Array compatibility
+        const buffer = new ArrayBuffer(8); // 2 pixels * 4 bytes
+        const rgbaData = new Uint8ClampedArray(buffer);
+        // Pixel 1: Red with full alpha
+        rgbaData[0] = 255; // R
+        rgbaData[1] = 0;   // G
+        rgbaData[2] = 0;   // B
+        rgbaData[3] = 255; // A (fully opaque)
+        // Pixel 2: Green with full alpha
+        rgbaData[4] = 0;   // R
+        rgbaData[5] = 255; // G
+        rgbaData[6] = 0;   // B
+        rgbaData[7] = 255; // A (fully opaque)
+        
         const mockCanvas = {
           width: 0,
           height: 0,
           getContext: vi.fn(() => ({
             drawImage: vi.fn(),
             getImageData: vi.fn(() => ({
-              data: new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255])
+              data: rgbaData
             }))
           }))
         };
@@ -930,22 +955,23 @@ describe('ImageUtilsService', () => {
       });
 
       it('should detect animated GIF', async () => {
-        // NETSCAPE2.0 extension marker with exact bytes as expected by the algorithm
-        // [0x21, 0xFF, 0x0B, 0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45]
+        // Create GIF data with NETSCAPE2.0 marker
         const gifData = new Uint8Array(200); // Large enough buffer
         
-        // Place NETSCAPE marker at position 50
-        const netscape = [0x21, 0xFF, 0x0B, 0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45];
-        netscape.forEach((byte, i) => {
+        // Place NETSCAPE2.0 marker using TextEncoder (matches new implementation)
+        const netscapeMarker = new TextEncoder().encode('NETSCAPE2.0');
+        netscapeMarker.forEach((byte, i) => {
           gifData[50 + i] = byte;
         });
         
         const buffer = gifData.buffer;
         const gifFile = new File([gifData], 'test.gif', { type: 'image/gif' });
         
-        // Mock arrayBuffer method
-        Object.defineProperty(gifFile, 'arrayBuffer', {
-          value: vi.fn().mockResolvedValue(buffer),
+        // Mock slice method (new implementation uses slice instead of arrayBuffer)
+        Object.defineProperty(gifFile, 'slice', {
+          value: vi.fn().mockReturnValue({
+            arrayBuffer: vi.fn().mockResolvedValue(buffer)
+          }),
           writable: true
         });
 
@@ -973,27 +999,40 @@ describe('ImageUtilsService', () => {
         const buffer = combined.buffer;
         const webpFile = new File([combined], 'test.webp', { type: 'image/webp' });
         
-        // Mock arrayBuffer method
-        webpFile.arrayBuffer = vi.fn().mockResolvedValue(buffer);
+        // Mock slice method (new implementation uses slice instead of arrayBuffer)
+        Object.defineProperty(webpFile, 'slice', {
+          value: vi.fn().mockReturnValue({
+            arrayBuffer: vi.fn().mockResolvedValue(buffer)
+          }),
+          writable: true
+        });
 
         const result = await service.isAnimated(webpFile);
         expect(result).toBe(true);
       });
 
       it('should return false on error when arrayBuffer fails', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        
         const gifFile = new File([new Uint8Array(10)], 'test.gif', { type: 'image/gif' });
         
-        // Mock arrayBuffer to reject
-        Object.defineProperty(gifFile, 'arrayBuffer', {
-          value: vi.fn().mockRejectedValue(new Error('Failed to read buffer')),
+        // Mock slice method to return object with failing arrayBuffer
+        Object.defineProperty(gifFile, 'slice', {
+          value: vi.fn().mockReturnValue({
+            arrayBuffer: vi.fn().mockRejectedValue(new Error('Failed to read buffer'))
+          }),
           writable: true
         });
 
         const result = await service.isAnimated(gifFile);
         expect(result).toBe(false);
+        
+        consoleErrorSpy.mockRestore();
       });
 
       it('should handle WebP files without proper RIFF header', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        
         const buffer = new ArrayBuffer(50);
         const view = new Uint8Array(buffer);
         // Intentionally not setting proper RIFF header
@@ -1003,6 +1042,8 @@ describe('ImageUtilsService', () => {
 
         const result = await service.isAnimated(webpFile);
         expect(result).toBe(false);
+        
+        consoleErrorSpy.mockRestore();
       });
     });
 
@@ -1136,6 +1177,8 @@ describe('ImageUtilsService', () => {
       });
 
       it('should return black when canvas context fails', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        
         const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
 
         const mockCanvas = {
@@ -1174,9 +1217,13 @@ describe('ImageUtilsService', () => {
 
         const result = await service.getDominantColor(file);
         expect(result).toBe('#000000');
+        
+        consoleErrorSpy.mockRestore();
       });
 
       it('should return black on error', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        
         const file = new File([mockBlob], 'test.jpg', { type: 'image/jpeg' });
 
         const mockImage: Partial<HTMLImageElement> = {
@@ -1195,6 +1242,8 @@ describe('ImageUtilsService', () => {
 
         const result = await promise;
         expect(result).toBe('#000000');
+        
+        consoleErrorSpy.mockRestore();
       });
     });
   });
