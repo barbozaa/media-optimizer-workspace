@@ -475,6 +475,8 @@ describe('ImageConverterService', () => {
 
   describe('Edge Cases', () => {
     it('should handle empty file array in convertFormat', async () => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      
       const obs$ = service.convertFormat([], { outputFormat: 'webp' });
       let completed = false;
       obs$.subscribe({
@@ -482,9 +484,13 @@ describe('ImageConverterService', () => {
       });
       expect(completed).toBe(true);
       expect(service.images.length).toBe(0);
+      
+      consoleWarnSpy.mockRestore();
     });
 
     it('should handle empty file array in compressImages', async () => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      
       const obs$ = service.compressImages([]);
       let completed = false;
       obs$.subscribe({
@@ -492,6 +498,8 @@ describe('ImageConverterService', () => {
       });
       expect(completed).toBe(true);
       expect(service.images.length).toBe(0);
+      
+      consoleWarnSpy.mockRestore();
     });
 
     it('should handle PNG file type detection', () => {

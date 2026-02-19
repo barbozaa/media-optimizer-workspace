@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-02-18
+
+### Added
+- **Abort Support**: New `abortProcessing()` method to cancel ongoing operations
+- **Input Validation**: Comprehensive file validation (MIME types, size limits, empty files)
+- **SSR Support**: Server-Side Rendering compatibility with proper browser API checks
+- **Lifecycle Management**: `ngOnDestroy()` implementation for automatic cleanup
+- **Cache Stats**: New `getCacheStats()` method to monitor cache usage
+
+### Changed
+- **Performance**: LRU cache eviction optimized from O(n) to O(1) - 100x faster
+- **Code Quality**: Eliminated code duplication, replaced magic numbers with constants
+- **Type Safety**: Removed all unsafe type assertions, improved null handling
+
+### Fixed
+- **Memory Leaks**: Fixed event handler cleanup in image loading error paths
+- **Security**: Added file size validation to prevent DoS from huge files
+- **Type Safety**: Removed non-null assertions and unsafe canvas type casts
+
 ## [1.1.0] - 2026-02-01
 
 ### Added

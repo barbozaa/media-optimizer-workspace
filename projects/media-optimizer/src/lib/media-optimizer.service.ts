@@ -1,7 +1,8 @@
-import { Injectable } from '@angular/core';
+import { Injectable, OnDestroy } from '@angular/core';
 import { Observable, from, defer, EMPTY, throwError } from 'rxjs';
 import { map, mergeMap, tap, catchError, finalize } from 'rxjs/operators';
 import imageCompression from 'browser-image-compression';
+import { ImageHelpers } from './shared/image-helpers';
 
 /**
  * Image formats supported by the service
@@ -49,6 +50,11 @@ export interface ConvertOptions {
   maxWidthOrHeight?: number;
   /** Enable Web Worker processing. Default: false */
   useWebWorker?: boolean;
+  /** 
+   * Number of images to process simultaneously. 
+   * Default: auto-detected based on device capabilities (4-8)
+   */
+  concurrency?: number;
 }
 
 /**
@@ -65,6 +71,11 @@ export interface CompressOptions {
   maxWidthOrHeight?: number;
   /** Enable Web Worker processing. Default: false */
   useWebWorker?: boolean;
+  /** 
+   * Number of images to process simultaneously. 
+   * Default: auto-detected based on device capabilities (4-8)
+   */
+  concurrency?: number;
 }
 
 /**
@@ -153,17 +164,37 @@ interface ProcessingResult {
 @Injectable({
   providedIn: 'root'
 })
-export class ImageConverterService {
+export class ImageConverterService implements OnDestroy {
+  
+  // ============================================================================
+  // CONSTANTS
+  // ============================================================================
+  
+  private readonly MAX_FILE_SIZE_MB = 100;
+  private readonly VALID_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'];
+  
+  /**
+   * AbortController for cancelling ongoing operations
+   * @private
+   */
+  private abortController: AbortController | null = null;
   
   // ============================================================================
   // REACTIVE STATE (Immutable State Management)
+  // Optimized with Map-based structure for O(1) updates
   // ============================================================================
   
   /**
-   * Internal writable signal for images.
-   * @internal - Only for component use, not part of public API
+   * Internal Map for O(1) lookups and updates
+   * @internal
    */
-  public _images: ReadonlyArray<ImageFile> = [];
+  private _imagesMap = new Map<string, ImageFile>();
+  
+  /**
+   * Maintains insertion order for array representation
+   * @internal
+   */
+  private _imageOrder: string[] = [];
   
   /**
    * Private state for server upload
@@ -192,7 +223,27 @@ export class ImageConverterService {
    * @readonly
    */
   get images(): ReadonlyArray<ImageFile> {
-    return this._images;
+    return this._imageOrder
+      .map(id => this._imagesMap.get(id))
+      .filter((img): img is ImageFile => img !== undefined);
+  }
+  
+  /**
+   * Legacy property for backward compatibility
+   * @internal
+   */
+  get _images(): ReadonlyArray<ImageFile> {
+    return this.images;
+  }
+  
+  set _images(value: ReadonlyArray<ImageFile>) {
+    // Support for tests that directly set _images
+    this._imagesMap.clear();
+    this._imageOrder = [];
+    value.forEach(img => {
+      this._imagesMap.set(img.id, img);
+      this._imageOrder.push(img.id);
+    });
   }
   
   /**
@@ -219,7 +270,7 @@ export class ImageConverterService {
    * @readonly
    */
   get completedImages(): ReadonlyArray<ImageFile> {
-    return this._images.filter(img => img.status === 'completed');
+    return this.images.filter(img => img.status === 'completed');
   }
   
   /**
@@ -271,7 +322,7 @@ export class ImageConverterService {
    */
   onImagesChange(callback: (images: ReadonlyArray<ImageFile>) => void): () => void {
     this._imagesListeners.push(callback);
-    callback(this._images); // Emit initial value
+    callback(this.images); // Emit initial value
     
     return () => {
       const index = this._imagesListeners.indexOf(callback);
@@ -324,7 +375,8 @@ export class ImageConverterService {
    * @private
    */
   private notifyImagesChange(): void {
-    this._imagesListeners.forEach(listener => listener(this._images));
+    const images = this.images;
+    this._imagesListeners.forEach(listener => listener(images));
   }
 
   /**
@@ -343,6 +395,23 @@ export class ImageConverterService {
     this._progressListeners.forEach(listener => listener(this._uploadProgress));
   }
   
+  /**
+   * Angular lifecycle hook - cleanup on service destruction
+   */
+  ngOnDestroy(): void {
+    // Clean up all blob URLs to prevent memory leaks
+    this.images.forEach(img => this.revokeImageUrls(img));
+    
+    // Clear all listeners
+    this._imagesListeners = [];
+    this._uploadingListeners = [];
+    this._progressListeners = [];
+    
+    // Clear state
+    this._imagesMap.clear();
+    this._imageOrder = [];
+  }
+  
   // ============================================================================
   // PUBLIC API - CONVERSION AND COMPRESSION
   // ============================================================================
@@ -357,7 +426,7 @@ export class ImageConverterService {
    * **Execution flow:**
    * 1. File validation
    * 2. State entries creation
-   * 3. Parallel processing (max 6 concurrent)
+   * 3. Parallel processing (configurable concurrency, default auto-detected)
    * 4. State update for each image
    * 5. Automatic cleanup on error
    * 
@@ -376,7 +445,8 @@ export class ImageConverterService {
    *   outputFormat: 'jpeg',
    *   quality: 85,
    *   maxSizeMB: 0.5,
-   *   maxWidthOrHeight: 1024
+   *   maxWidthOrHeight: 1024,
+   *   concurrency: 4  // Custom concurrency
    * }).subscribe({
    *   next: () => console.log('Conversion successful'),
    *   error: (err) => console.error('Failed:', err)
@@ -397,20 +467,53 @@ export class ImageConverterService {
       return EMPTY;
     }
     
+    // Validate files
+    const validationError = this.validateFiles(fileArray);
+    if (validationError) {
+      return throwError(() => new Error(validationError));
+    }
+    
+    // Create new AbortController for this operation
+    this.abortController = new AbortController();
+    const signal = this.abortController.signal;
+    
+    // Check if already aborted
+    if (signal.aborted) {
+      return throwError(() => new Error('Operation aborted'));
+    }
+    
+    // Optimize batch order: small files first for faster feedback
+    const optimizedFiles = ImageHelpers.optimizeBatchOrder(fileArray);
+    
     // Create initial state entries
-    const imageFiles = this.createImageEntries(fileArray, options);
+    const imageFiles = this.createImageEntries(
+      optimizedFiles,
+      options.quality ?? 80,
+      options.outputFormat
+    );
     this.addImagesToState(imageFiles);
+    
+    // Use configured or auto-detected concurrency
+    const concurrency = options.concurrency ?? ImageHelpers.getOptimalConcurrency();
     
     // Process in parallel with controlled concurrency
     return from(imageFiles).pipe(
       mergeMap((imageFile, index) => {
-        return this.processImageConversion(imageFile, fileArray[index], options);
-      }, 6), // Maximum 6 images in parallel
+        // Check abort signal before processing each file
+        if (signal.aborted) {
+          return throwError(() => new Error('Operation aborted'));
+        }
+        return this.processImageConversion(imageFile, optimizedFiles[index], options);
+      }, concurrency), // Configurable concurrency
       tap(result => {
         this.updateImageOnSuccess(result);
       }),
       map(() => void 0), // Convert result to void
-      catchError(error => this.handleProcessingError(error))
+      catchError(error => this.handleProcessingError(error)),
+      finalize(() => {
+        // Clear abort controller when operation completes
+        this.abortController = null;
+      })
     );
   }
   
@@ -436,11 +539,12 @@ export class ImageConverterService {
    * service.compressImages(files, { quality: 75 })
    *   .subscribe();
    * 
-   * // With strict limits
+   * // With strict limits and custom concurrency
    * service.compressImages(files, {
    *   quality: 60,
    *   maxSizeMB: 0.3,
-   *   maxWidthOrHeight: 800
+   *   maxWidthOrHeight: 800,
+   *   concurrency: 8
    * }).subscribe();
    * ```
    * 
@@ -457,17 +561,49 @@ export class ImageConverterService {
       return EMPTY;
     }
     
-    const imageFiles = this.createImageEntriesForCompression(fileArray, options);
+    // Validate files
+    const validationError = this.validateFiles(fileArray);
+    if (validationError) {
+      return throwError(() => new Error(validationError));
+    }
+    
+    // Create new AbortController for this operation
+    this.abortController = new AbortController();
+    const signal = this.abortController.signal;
+    
+    // Check if already aborted
+    if (signal.aborted) {
+      return throwError(() => new Error('Operation aborted'));
+    }
+    
+    // Optimize batch order
+    const optimizedFiles = ImageHelpers.optimizeBatchOrder(fileArray);
+    
+    const imageFiles = this.createImageEntries(
+      optimizedFiles,
+      options.quality ?? 80
+    );
     this.addImagesToState(imageFiles);
     
+    // Use configured or auto-detected concurrency
+    const concurrency = options.concurrency ?? ImageHelpers.getOptimalConcurrency();
+    
     return from(imageFiles).pipe(
-      mergeMap((imageFile, index) => 
-        this.processImageCompression(imageFile, fileArray[index], options),
-        6
+      mergeMap((imageFile, index) => {
+        // Check abort signal before processing each file
+        if (signal.aborted) {
+          return throwError(() => new Error('Operation aborted'));
+        }
+        return this.processImageCompression(imageFile, optimizedFiles[index], options);
+      }, concurrency // Configurable concurrency
       ),
       tap(result => this.updateImageOnSuccess(result)),
       map(() => void 0), // Convert result to void
-      catchError(error => this.handleProcessingError(error))
+      catchError(error => this.handleProcessingError(error)),
+      finalize(() => {
+        // Clear abort controller when operation completes
+        this.abortController = null;
+      })
     );
   }
   
@@ -491,14 +627,7 @@ export class ImageConverterService {
    * @public
    */
   formatBytes(bytes: number, decimals: number = 2): string {
-    if (bytes === 0) return '0 Bytes';
-    
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    
-    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+    return ImageHelpers.formatBytes(bytes, decimals);
   }
   
   /**
@@ -538,6 +667,33 @@ export class ImageConverterService {
     return this.formatBytes(file.size);
   }
 
+  /**
+   * Aborts any ongoing image processing operations.
+   * 
+   * Cancels pending convertFormat() or compressImages() operations.
+   * Images already processed will be kept, but unprocessed images
+   * will be marked with error status.
+   * 
+   * @example
+   * ```typescript
+   * // Start conversion
+   * const subscription = service.convertFormat(files, { outputFormat: 'webp' })
+   *   .subscribe();
+   * 
+   * // Cancel operation
+   * service.abortProcessing();
+   * subscription.unsubscribe();
+   * ```
+   * 
+   * @public
+   */
+  abortProcessing(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+  
   // ============================================================================
   // PUBLIC API - STATE MANAGEMENT
   // ============================================================================
@@ -562,11 +718,12 @@ export class ImageConverterService {
    * @public
    */
   removeImage(id: string): void {
-    const imageToRemove = this._images.find(img => img.id === id);
+    const imageToRemove = this._imagesMap.get(id);
     
     if (imageToRemove) {
       this.revokeImageUrls(imageToRemove);
-      this._images = this._images.filter(img => img.id !== id);
+      this._imagesMap.delete(id);
+      this._imageOrder = this._imageOrder.filter(imgId => imgId !== id);
       this.notifyImagesChange();
     }
   }
@@ -589,8 +746,9 @@ export class ImageConverterService {
    * @public
    */
   removeAllImages(): void {
-    this._images.forEach(img => this.revokeImageUrls(img));
-    this._images = [];
+    this.images.forEach(img => this.revokeImageUrls(img));
+    this._imagesMap.clear();
+    this._imageOrder = [];
     this.notifyImagesChange();
   }
 
@@ -612,12 +770,16 @@ export class ImageConverterService {
    * @public
    */
   clearCompleted(): void {
-    this._images.forEach(img => {
+    this.images.forEach(img => {
       if (img.status === 'completed') {
         this.revokeImageUrls(img);
+        this._imagesMap.delete(img.id);
       }
     });
-    this._images = this._images.filter(img => img.status !== 'completed');
+    this._imageOrder = this._imageOrder.filter(id => {
+      const img = this._imagesMap.get(id);
+      return img && img.status !== 'completed';
+    });
     this.notifyImagesChange();
   }
 
@@ -631,6 +793,8 @@ export class ImageConverterService {
    * Creates a temporary download link and triggers the download. Only works
    * for images with status 'completed'.
    * 
+   * Note: Not available in SSR context (requires browser document API).
+   * 
    * @param id - Unique identifier of the image to download
    * 
    * @example
@@ -642,7 +806,13 @@ export class ImageConverterService {
    * @public
    */
   downloadImage(id: string): void {
-    const image = this._images.find(img => img.id === id);
+    // Check if running in browser environment
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      console.warn('[ImageConverter] Download not available in SSR context');
+      return;
+    }
+    
+    const image = this._imagesMap.get(id);
     
     if (!image) {
       console.warn(`[ImageConverter] Image with id ${id} not found`);
@@ -674,6 +844,8 @@ export class ImageConverterService {
    * Iterates through all completed images and triggers individual downloads.
    * Note: Some browsers may block multiple simultaneous downloads.
    * 
+   * Note: Not available in SSR context (requires browser document API).
+   * 
    * @example
    * ```typescript
    * // Download all completed images
@@ -683,6 +855,12 @@ export class ImageConverterService {
    * @public
    */
   downloadAllImages(): void {
+    // Check if running in browser environment
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      console.warn('[ImageConverter] Download not available in SSR context');
+      return;
+    }
+    
     const completedImages = this.completedImages;
     
     if (completedImages.length === 0) {
@@ -703,19 +881,20 @@ export class ImageConverterService {
   // ============================================================================
   
   /**
-   * Processes the conversion of an individual image.
+   * Processes an individual image (conversion or compression).
    * @private
    */
-  private processImageConversion(
+  private processImage(
     imageFile: ImageFile,
     originalFile: File,
-    options: ConvertOptions
+    outputFormat: ImageFormat,
+    options: { quality?: number; maxSizeMB?: number; maxWidthOrHeight?: number; useWebWorker?: boolean }
   ): Observable<ProcessingResult> {
     this.updateImageStatus(imageFile.id, 'processing');
     
     return defer(() => {
       return from(this.compressImage(originalFile, {
-        outputFormat: options.outputFormat,
+        outputFormat,
         quality: options.quality ?? 80,
         maxSizeMB: options.maxSizeMB ?? 10,
         maxWidthOrHeight: options.maxWidthOrHeight ?? 1920,
@@ -727,10 +906,22 @@ export class ImageConverterService {
       }),
       catchError(error => {
         this.updateImageStatus(imageFile.id, 'error');
-        console.error(`[ImageConverter] Failed to convert ${imageFile.name}:`, error);
+        console.error(`[ImageConverter] Failed to process ${imageFile.name}:`, error);
         return throwError(() => error);
       })
     );
+  }
+  
+  /**
+   * Processes the conversion of an individual image.
+   * @private
+   */
+  private processImageConversion(
+    imageFile: ImageFile,
+    originalFile: File,
+    options: ConvertOptions
+  ): Observable<ProcessingResult> {
+    return this.processImage(imageFile, originalFile, options.outputFormat, options);
   }
   
   /**
@@ -742,24 +933,8 @@ export class ImageConverterService {
     originalFile: File,
     options: CompressOptions
   ): Observable<ProcessingResult> {
-    this.updateImageStatus(imageFile.id, 'processing');
-    
     const format = this.detectImageFormat(originalFile.type);
-    
-    return defer(() => from(this.compressImage(originalFile, {
-      outputFormat: format,
-      quality: options.quality ?? 80,
-      maxSizeMB: options.maxSizeMB ?? 10,
-      maxWidthOrHeight: options.maxWidthOrHeight ?? 1920,
-      useWebWorker: options.useWebWorker ?? false
-    }))).pipe(
-      map(compressedFile => ({ imageFile, compressedFile })),
-      catchError(error => {
-        this.updateImageStatus(imageFile.id, 'error');
-        console.error(`[ImageConverter] Failed to compress ${imageFile.name}:`, error);
-        return throwError(() => error);
-      })
-    );
+    return this.processImage(imageFile, originalFile, format, options);
   }
   
   /**
@@ -768,7 +943,7 @@ export class ImageConverterService {
    */
   private async compressImage(
     file: File,
-    options: Required<Omit<ConvertOptions, 'outputFormat'>> & { outputFormat: ImageFormat }
+    options: Required<Omit<ConvertOptions, 'outputFormat' | 'concurrency'>> & { outputFormat: ImageFormat }
   ): Promise<File> {
     const compressionOptions = {
       maxSizeMB: options.maxSizeMB,
@@ -786,81 +961,71 @@ export class ImageConverterService {
   // ============================================================================
   
   /**
-   * Creates ImageFile entries for format conversion.
+   * Creates ImageFile entries for processing.
    * @private
+   * @param files - Files to create entries for
+   * @param quality - Compression quality
+   * @param outputFormat - Optional output format (if undefined, keeps original format)
    */
   private createImageEntries(
     files: File[],
-    options: ConvertOptions
+    quality: number,
+    outputFormat?: ImageFormat
   ): ImageFile[] {
     return files.map(file => ({
       id: crypto.randomUUID(),
-      name: this.changeFileExtension(file.name, options.outputFormat),
+      name: outputFormat ? this.changeFileExtension(file.name, outputFormat) : file.name,
       originalSize: file.size,
       compressedSize: 0,
       originalUrl: URL.createObjectURL(file),
       compressedUrl: '',
       status: 'pending' as const,
-      quality: options.quality ?? 80
-    }));
-  }
-  
-  /**
-   * Creates ImageFile entries for compression without format change.
-   * @private
-   */
-  private createImageEntriesForCompression(
-    files: File[],
-    options: CompressOptions
-  ): ImageFile[] {
-    return files.map(file => ({
-      id: crypto.randomUUID(),
-      name: file.name,
-      originalSize: file.size,
-      compressedSize: 0,
-      originalUrl: URL.createObjectURL(file),
-      compressedUrl: '',
-      status: 'pending' as const,
-      quality: options.quality ?? 80
+      quality
     }));
   }
   
   /**
    * Adds new images to state immutably.
+   * Optimized with Map structure for O(1) insertion
    * @private
    */
   private addImagesToState(images: ImageFile[]): void {
-    this._images = [...this._images, ...images];
+    images.forEach(img => {
+      this._imagesMap.set(img.id, img);
+      this._imageOrder.push(img.id);
+    });
     this.notifyImagesChange();
   }
   
   /**
    * Updates image state after successful processing.
+   * Optimized with Map structure for O(1) update
    * @private
    */
   private updateImageOnSuccess(result: ProcessingResult): void {
-    this._images = this._images.map(img =>
-      img.id === result.imageFile.id
-        ? {
-            ...img,
-            compressedSize: result.compressedFile.size,
-            compressedUrl: URL.createObjectURL(result.compressedFile),
-            status: 'completed' as const
-          }
-        : img
-    );
-    this.notifyImagesChange();
+    const existing = this._imagesMap.get(result.imageFile.id);
+    if (existing) {
+      this._imagesMap.set(result.imageFile.id, {
+        ...existing,
+        compressedSize: result.compressedFile.size,
+        compressedUrl: URL.createObjectURL(result.compressedFile),
+        status: 'completed' as const
+      });
+      this.notifyImagesChange();
+    }
   }
   
   /**
    * Updates only the status of an image.
+   * Optimized with Map structure for O(1) update
    * @private
    */
   private updateImageStatus(id: string, status: ImageProcessingStatus): void {
-    this._images = this._images.map(img =>
-      img.id === id ? { ...img, status } : img
-    );
-    this.notifyImagesChange();
+    const existing = this._imagesMap.get(id);
+    if (existing) {
+      this._imagesMap.set(id, { ...existing, status });
+      this.notifyImagesChange();
+    }
   }
   
   /**
@@ -877,14 +1042,38 @@ export class ImageConverterService {
   // ============================================================================
   
   /**
+   * Validates array of files for processing.
+   * Checks MIME types and file sizes.
+   * @private
+   * @returns Error message if validation fails, null if all valid
+   */
+  private validateFiles(files: File[]): string | null {
+    for (const file of files) {
+      // Validate MIME type
+      if (!this.VALID_MIME_TYPES.includes(file.type)) {
+        return `Invalid file type: ${file.type}. File: ${file.name}`;
+      }
+      
+      // Validate file size
+      const maxBytes = this.MAX_FILE_SIZE_MB * 1024 * 1024;
+      if (file.size > maxBytes) {
+        return `File too large: ${file.name} (${ImageHelpers.formatBytes(file.size)}). Maximum: ${this.MAX_FILE_SIZE_MB}MB`;
+      }
+      
+      // Validate file has content
+      if (file.size === 0) {
+        return `File is empty: ${file.name}`;
+      }
+    }
+    return null;
+  }
+  
+  /**
    * Detects image format from MIME type.
    * @private
    */
   private detectImageFormat(mimeType: string): ImageFormat {
-    if (mimeType.includes('avif')) return 'avif';
-    if (mimeType.includes('webp')) return 'webp';
-    if (mimeType.includes('png')) return 'png';
-    return 'jpeg';
+    return ImageHelpers.detectImageFormat(mimeType);
   }
   
   /**
