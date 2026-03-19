@@ -73,6 +73,8 @@ describe('ImageUtilsService', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 800,
         height: 600,
+        naturalWidth: 800,
+        naturalHeight: 600,
         onload: null,
         onerror: null,
         src: ''
@@ -93,6 +95,8 @@ describe('ImageUtilsService', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 0,
         height: 0,
+        naturalWidth: 0,
+        naturalHeight: 0,
         onload: null,
         onerror: null,
         src: ''
@@ -105,7 +109,7 @@ describe('ImageUtilsService', () => {
       // Simulate image error
       setTimeout(() => mockImage.onerror && mockImage.onerror.call(mockImage as any, new Event('error')), 0);
 
-      await expect(promise).rejects.toThrow('Failed to load image dimensions');
+      await expect(promise).rejects.toThrow('Failed to load image');
     });
   });
 
@@ -138,6 +142,7 @@ describe('ImageUtilsService', () => {
       
       const mockFileReader: Partial<FileReader> = {
         readAsDataURL: vi.fn(),
+        abort: vi.fn(),
         onload: null,
         onerror: null,
         result: mockBase64
@@ -158,6 +163,7 @@ describe('ImageUtilsService', () => {
     it('should reject on FileReader error', async () => {
       const mockFileReader: Partial<FileReader> = {
         readAsDataURL: vi.fn(),
+        abort: vi.fn(),
         onload: null,
         onerror: null,
         result: null
@@ -176,6 +182,7 @@ describe('ImageUtilsService', () => {
     it('should reject when result is not a string', async () => {
       const mockFileReader: Partial<FileReader> = {
         readAsDataURL: vi.fn(),
+        abort: vi.fn(),
         onload: null,
         onerror: null,
         result: new ArrayBuffer(8) // Not a string
@@ -197,6 +204,8 @@ describe('ImageUtilsService', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 1920,
         height: 1080,
+        naturalWidth: 1920,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
@@ -228,6 +237,8 @@ describe('ImageUtilsService', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 1000,
         height: 1000,
+        naturalWidth: 1000,
+        naturalHeight: 1000,
         onload: null,
         onerror: null,
         src: ''
@@ -251,6 +262,8 @@ describe('ImageUtilsService', () => {
       const mockImage1: Partial<HTMLImageElement> = {
         width: 800,
         height: 600,
+        naturalWidth: 800,
+        naturalHeight: 600,
         onload: null,
         onerror: null,
         src: ''
@@ -267,6 +280,8 @@ describe('ImageUtilsService', () => {
       const mockImage2: Partial<HTMLImageElement> = {
         width: 800,
         height: 600,
+        naturalWidth: 800,
+        naturalHeight: 600,
         onload: null,
         onerror: null,
         src: ''
@@ -330,6 +345,8 @@ describe('ImageUtilsService', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 1920,
         height: 1080,
+        naturalWidth: 1920,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
@@ -348,6 +365,8 @@ describe('ImageUtilsService', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 1920,
         height: 1080,
+        naturalWidth: 1920,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
@@ -366,6 +385,8 @@ describe('ImageUtilsService', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 800,
         height: 600,
+        naturalWidth: 800,
+        naturalHeight: 600,
         onload: null,
         onerror: null,
         src: ''
@@ -386,6 +407,8 @@ describe('ImageUtilsService', () => {
       const mockImage1: Partial<HTMLImageElement> = {
         width: 1935,
         height: 1080,
+        naturalWidth: 1935,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
@@ -402,6 +425,8 @@ describe('ImageUtilsService', () => {
       const mockImage2: Partial<HTMLImageElement> = {
         width: 1935,
         height: 1080,
+        naturalWidth: 1935,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
@@ -472,6 +497,25 @@ describe('ImageUtilsService', () => {
       const estimated = service.estimateCompressedSize(file, 0);
       expect(estimated).toBe(0); // 1000000 * 0 * 0.85
     });
+
+    it('should use targetFormat compression factor instead of source format', () => {
+      const jpegFile = new File([mockBlob], 'photo.jpg', { type: 'image/jpeg' });
+      Object.defineProperty(jpegFile, 'size', { value: 1000000 });
+
+      // No targetFormat → uses JPEG factor (0.85)
+      const jpegEstimate = service.estimateCompressedSize(jpegFile, 80);
+      // targetFormat='webp' → uses WebP factor (0.65)
+      const webpEstimate = service.estimateCompressedSize(jpegFile, 80, 'webp');
+      // targetFormat='avif' → uses AVIF factor (0.50)
+      const avifEstimate = service.estimateCompressedSize(jpegFile, 80, 'avif');
+
+      // More efficient formats → smaller estimated size
+      expect(webpEstimate).toBeLessThan(jpegEstimate);
+      expect(avifEstimate).toBeLessThan(webpEstimate);
+      // Ratio between formats must match COMPRESSION_FACTORS exactly
+      expect(webpEstimate / jpegEstimate).toBeCloseTo(0.65 / 0.85, 5);
+      expect(avifEstimate / jpegEstimate).toBeCloseTo(0.50 / 0.85, 5);
+    });
   });
 
   describe('getBestQuality()', () => {
@@ -532,6 +576,19 @@ describe('ImageUtilsService', () => {
       const quality = service.getBestQuality(file, 10); // Very high target
       expect(quality).toBe(100); // Capped at maximum
     });
+
+    it('should use targetFormat compression factor instead of source format', () => {
+      const jpegFile = new File([mockBlob], 'photo.jpg', { type: 'image/jpeg' });
+      Object.defineProperty(jpegFile, 'size', { value: 5000000 }); // 5 MB
+
+      const jpegQuality = service.getBestQuality(jpegFile, 1);           // JPEG factor
+      const webpQuality  = service.getBestQuality(jpegFile, 1, 'webp');  // WebP factor
+      const avifQuality  = service.getBestQuality(jpegFile, 1, 'avif');  // AVIF factor
+
+      // WebP/AVIF compress better → same target size is reachable at higher quality
+      expect(webpQuality).toBeGreaterThan(jpegQuality);
+      expect(avifQuality).toBeGreaterThan(webpQuality);
+    });
   });
 
   describe('formatBytes()', () => {
@@ -563,6 +620,20 @@ describe('ImageUtilsService', () => {
     it('should handle negative decimals by using 0', () => {
       expect(service.formatBytes(1536, -1)).toBe('2 KB');
     });
+
+    it('should return N/A for negative bytes', () => {
+      expect(service.formatBytes(-1)).toBe('N/A');
+      expect(service.formatBytes(-1000)).toBe('N/A');
+    });
+
+    it('should return N/A for NaN bytes', () => {
+      expect(service.formatBytes(NaN)).toBe('N/A');
+    });
+
+    it('should return N/A for Infinity bytes', () => {
+      expect(service.formatBytes(Infinity)).toBe('N/A');
+      expect(service.formatBytes(-Infinity)).toBe('N/A');
+    });
   });
 
   describe('Validation', () => {
@@ -571,6 +642,8 @@ describe('ImageUtilsService', () => {
         const mockImage: Partial<HTMLImageElement> = {
           width: 1920,
           height: 1080,
+          naturalWidth: 1920,
+          naturalHeight: 1080,
           onload: null,
           onerror: null,
           src: ''
@@ -590,6 +663,8 @@ describe('ImageUtilsService', () => {
         const mockImage: Partial<HTMLImageElement> = {
           width: 50,
           height: 1080,
+          naturalWidth: 50,
+          naturalHeight: 1080,
           onload: null,
           onerror: null,
           src: ''
@@ -609,6 +684,8 @@ describe('ImageUtilsService', () => {
         const mockImage: Partial<HTMLImageElement> = {
           width: 5000,
           height: 1080,
+          naturalWidth: 5000,
+          naturalHeight: 1080,
           onload: null,
           onerror: null,
           src: ''
@@ -624,12 +701,12 @@ describe('ImageUtilsService', () => {
         expect(result).toBe(false);
       });
 
-      it('should return false on error', async () => {
-        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-        
+      it('should throw on load error', async () => {
         const mockImage: Partial<HTMLImageElement> = {
           width: 0,
           height: 0,
+          naturalWidth: 0,
+          naturalHeight: 0,
           onload: null,
           onerror: null,
           src: ''
@@ -641,10 +718,7 @@ describe('ImageUtilsService', () => {
         
         setTimeout(() => mockImage.onerror && mockImage.onerror.call(mockImage as any, new Event('error')), 0);
 
-        const result = await promise;
-        expect(result).toBe(false);
-        
-        consoleErrorSpy.mockRestore();
+        await expect(promise).rejects.toThrow('Failed to load image');
       });
     });
 
@@ -722,6 +796,8 @@ describe('ImageUtilsService', () => {
         const mockImage: any = {
           width: 5000,
           height: 5000,
+          naturalWidth: 5000,
+          naturalHeight: 5000,
           set onload(handler: any) {
             savedOnload = handler;
           },
@@ -820,6 +896,8 @@ describe('ImageUtilsService', () => {
         const mockImage: any = {
           width: 2,
           height: 1,
+          naturalWidth: 2,
+          naturalHeight: 1,
           set onload(handler: any) {
             savedOnload = handler;
           },
@@ -883,6 +961,8 @@ describe('ImageUtilsService', () => {
         const mockImage: any = {
           width: 2,
           height: 1,
+          naturalWidth: 2,
+          naturalHeight: 1,
           set onload(handler: any) {
             savedOnload = handler;
           },
@@ -954,29 +1034,116 @@ describe('ImageUtilsService', () => {
         expect(result).toBe(false);
       });
 
-      it('should detect animated GIF', async () => {
-        // Create GIF data with NETSCAPE2.0 marker
-        const gifData = new Uint8Array(200); // Large enough buffer
-        
-        // Place NETSCAPE2.0 marker using TextEncoder (matches new implementation)
-        const netscapeMarker = new TextEncoder().encode('NETSCAPE2.0');
-        netscapeMarker.forEach((byte, i) => {
-          gifData[50 + i] = byte;
-        });
-        
-        const buffer = gifData.buffer;
-        const gifFile = new File([gifData], 'test.gif', { type: 'image/gif' });
-        
-        // Mock slice method (new implementation uses slice instead of arrayBuffer)
+      it('should detect animated GIF (two Image Descriptor blocks)', async () => {
+        // Minimal 2-frame GIF89a (1×1 px, no GCT, minimal LZW sub-blocks).
+        // The block-structure parser counts Image Descriptors (0x2C); when it
+        // finds the second one it returns true without decoding any LZW data.
+        //
+        // Layout (offsets):
+        //   0-5   GIF89a header
+        //   6-12  Logical Screen Descriptor (1×1, no GCT)
+        //   13    0x2C  Image Descriptor #1
+        //   14-22 descriptor fields + packed (no LCT)
+        //   23    LZW min code size byte
+        //   24-27 sub-block (len=2 + 2 bytes) + terminator
+        //   28    0x2C  Image Descriptor #2  → frameCount = 2 → return true
+        const buf = new Uint8Array(40);
+        // Header
+        buf.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0);
+        // LSD: width=1, height=1, packed=0 (no GCT), bg=0, ratio=0
+        buf[6] = 1; buf[7] = 0; buf[8] = 1; buf[9] = 0;
+        buf[10] = 0x00; buf[11] = 0x00; buf[12] = 0x00;
+        // Image Descriptor #1 at 13
+        buf[13] = 0x2C;
+        buf[14] = 0; buf[15] = 0; buf[16] = 0; buf[17] = 0; // left, top
+        buf[18] = 1; buf[19] = 0; buf[20] = 1; buf[21] = 0; // w, h
+        buf[22] = 0x00; // packed: no LCT
+        buf[23] = 0x02; // LZW min code size
+        buf[24] = 0x02; buf[25] = 0x4C; buf[26] = 0x01; // sub-block: len=2, 2 bytes
+        buf[27] = 0x00; // sub-block terminator
+        // Image Descriptor #2 at 28 — triggers return true
+        buf[28] = 0x2C;
+
+        const gifFile = new File([buf], 'animated.gif', { type: 'image/gif' });
         Object.defineProperty(gifFile, 'slice', {
           value: vi.fn().mockReturnValue({
-            arrayBuffer: vi.fn().mockResolvedValue(buffer)
+            arrayBuffer: vi.fn().mockResolvedValue(buf.buffer)
           }),
           writable: true
         });
 
         const result = await service.isAnimated(gifFile);
         expect(result).toBe(true);
+      });
+
+      it('should NOT false-positive on 0x2C bytes inside LZW sub-block data', async () => {
+        // Regression test for the old raw-scan approach.
+        // This single-frame GIF has three 0x2C bytes embedded in the LZW sub-block
+        // payload. The block-structure parser skips sub-block bodies and never sees
+        // them, so frameCount stays at 1 and the result is false.
+        const buf = new Uint8Array(32);
+        buf.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0); // GIF89a
+        buf[6] = 1; buf[7] = 0; buf[8] = 1; buf[9] = 0;   // 1×1
+        buf[10] = 0x00; buf[11] = 0x00; buf[12] = 0x00;    // packed (no GCT)
+        buf[13] = 0x2C;                                      // Image Descriptor
+        buf[14] = 0; buf[15] = 0; buf[16] = 0; buf[17] = 0;
+        buf[18] = 1; buf[19] = 0; buf[20] = 1; buf[21] = 0;
+        buf[22] = 0x00;  // packed: no LCT
+        buf[23] = 0x02;  // LZW min code size
+        // Sub-block with 0x2C bytes embedded in the (fake) LZW data
+        buf[24] = 0x04;  // sub-block length = 4
+        buf[25] = 0x2C; buf[26] = 0x2C; buf[27] = 0x2C; buf[28] = 0xFF;
+        buf[29] = 0x00;  // sub-block terminator
+        buf[30] = 0x3B;  // GIF Trailer
+
+        const gifFile = new File([buf], 'single-frame.gif', { type: 'image/gif' });
+        Object.defineProperty(gifFile, 'slice', {
+          value: vi.fn().mockReturnValue({
+            arrayBuffer: vi.fn().mockResolvedValue(buf.buffer)
+          }),
+          writable: true
+        });
+
+        const result = await service.isAnimated(gifFile);
+        expect(result).toBe(false);
+      });
+
+      it('should return false for single-frame GIF with NETSCAPE looping extension', async () => {
+        // A GIF with NETSCAPE2.0 but only ONE frame is not animated — it just
+        // loops a still image. The old NETSCAPE2.0 string-search approach would
+        // wrongly return true here.
+        const netscape = new TextEncoder().encode('NETSCAPE2.0');
+        const buf = new Uint8Array(60);
+        buf.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0);
+        buf[6] = 1; buf[7] = 0; buf[8] = 1; buf[9] = 0;
+        buf[10] = 0x00; buf[11] = 0x00; buf[12] = 0x00;
+        // Application Extension (NETSCAPE looping)
+        buf[13] = 0x21; buf[14] = 0xFF;    // extension introducer + Application label
+        buf[15] = 0x0B;                    // sub-block: 11 bytes
+        netscape.forEach((b, i) => { buf[16 + i] = b; }); // "NETSCAPE2.0"
+        buf[27] = 0x03;                    // sub-block: 3 bytes (loop count)
+        buf[28] = 0x01; buf[29] = 0x00; buf[30] = 0x00;
+        buf[31] = 0x00;                    // sub-block terminator
+        // Single Image Descriptor
+        buf[32] = 0x2C;
+        buf[33] = 0; buf[34] = 0; buf[35] = 0; buf[36] = 0;
+        buf[37] = 1; buf[38] = 0; buf[39] = 1; buf[40] = 0;
+        buf[41] = 0x00;
+        buf[42] = 0x02;  // LZW min code size
+        buf[43] = 0x02; buf[44] = 0x4C; buf[45] = 0x01;
+        buf[46] = 0x00;  // sub-block terminator
+        buf[47] = 0x3B;  // GIF Trailer
+
+        const gifFile = new File([buf], 'looping-still.gif', { type: 'image/gif' });
+        Object.defineProperty(gifFile, 'slice', {
+          value: vi.fn().mockReturnValue({
+            arrayBuffer: vi.fn().mockResolvedValue(buf.buffer)
+          }),
+          writable: true
+        });
+
+        const result = await service.isAnimated(gifFile);
+        expect(result).toBe(false);
       });
 
       it('should return false for static GIF', async () => {
@@ -991,24 +1158,56 @@ describe('ImageUtilsService', () => {
         expect(result).toBe(false);
       });
 
-      it('should detect animated WebP', async () => {
-        const riffHeader = new TextEncoder().encode('RIFF');
-        const webpHeader = new TextEncoder().encode('WEBP');
-        const animChunk = new TextEncoder().encode('ANIM');
-        const combined = new Uint8Array([...riffHeader, 0, 0, 0, 0, ...webpHeader, ...animChunk]);
-        const buffer = combined.buffer;
-        const webpFile = new File([combined], 'test.webp', { type: 'image/webp' });
-        
-        // Mock slice method (new implementation uses slice instead of arrayBuffer)
+      it('should detect animated WebP via VP8X animation flag', async () => {
+        // Real animated WebP structure:
+        //   RIFF(4) + size(4) + WEBP(4) + VP8X(4) + chunk-size(4) + flags(4) + canvas-dims(6) = 30 bytes
+        // The animation flag is bit 1 (0x02) of the flags byte at offset 20.
+        const buf = new Uint8Array(30);
+        const view = new DataView(buf.buffer);
+        buf.set(new TextEncoder().encode('RIFF'), 0);   // offset  0-3
+        view.setUint32(4, 22, true);                    // offset  4-7: file size (LE)
+        buf.set(new TextEncoder().encode('WEBP'), 8);   // offset  8-11
+        buf.set(new TextEncoder().encode('VP8X'), 12);  // offset 12-15
+        view.setUint32(16, 10, true);                   // offset 16-19: VP8X payload size = 10 (LE)
+        buf[20] = 0x02;                                 // offset 20: flags — animation bit set
+        // canvas width-1 (24-bit LE): 99 → 100px
+        buf[24] = 0x63; buf[25] = 0x00; buf[26] = 0x00;
+        // canvas height-1 (24-bit LE): 99 → 100px
+        buf[27] = 0x63; buf[28] = 0x00; buf[29] = 0x00;
+
+        const webpFile = new File([buf], 'test.webp', { type: 'image/webp' });
         Object.defineProperty(webpFile, 'slice', {
           value: vi.fn().mockReturnValue({
-            arrayBuffer: vi.fn().mockResolvedValue(buffer)
+            arrayBuffer: vi.fn().mockResolvedValue(buf.buffer)
           }),
           writable: true
         });
 
         const result = await service.isAnimated(webpFile);
         expect(result).toBe(true);
+      });
+
+      it('should return false for non-animated extended WebP (VP8X without animation flag)', async () => {
+        // Same VP8X structure but animation flag cleared (0x00)
+        const buf = new Uint8Array(30);
+        const view = new DataView(buf.buffer);
+        buf.set(new TextEncoder().encode('RIFF'), 0);
+        view.setUint32(4, 22, true);
+        buf.set(new TextEncoder().encode('WEBP'), 8);
+        buf.set(new TextEncoder().encode('VP8X'), 12);
+        view.setUint32(16, 10, true);
+        buf[20] = 0x00; // flags — no animation, no other features
+
+        const webpFile = new File([buf], 'test.webp', { type: 'image/webp' });
+        Object.defineProperty(webpFile, 'slice', {
+          value: vi.fn().mockReturnValue({
+            arrayBuffer: vi.fn().mockResolvedValue(buf.buffer)
+          }),
+          writable: true
+        });
+
+        const result = await service.isAnimated(webpFile);
+        expect(result).toBe(false);
       });
 
       it('should return false on error when arrayBuffer fails', async () => {
@@ -1078,6 +1277,8 @@ describe('ImageUtilsService', () => {
         const mockImage: any = {
           width: 2,
           height: 2,
+          naturalWidth: 2,
+          naturalHeight: 2,
           set onload(handler: any) {
             savedOnload = handler;
           },
@@ -1153,6 +1354,8 @@ describe('ImageUtilsService', () => {
         const mockImage: any = {
           width: 10,
           height: 2,
+          naturalWidth: 10,
+          naturalHeight: 2,
           set onload(handler: any) {
             savedOnload = handler;
           },
@@ -1197,6 +1400,8 @@ describe('ImageUtilsService', () => {
         const mockImage: any = {
           width: 2,
           height: 2,
+          naturalWidth: 2,
+          naturalHeight: 2,
           set onload(handler: any) {
             savedOnload = handler;
           },
@@ -1229,6 +1434,8 @@ describe('ImageUtilsService', () => {
         const mockImage: Partial<HTMLImageElement> = {
           width: 0,
           height: 0,
+          naturalWidth: 0,
+          naturalHeight: 0,
           onload: null,
           onerror: null,
           src: ''
@@ -1243,6 +1450,58 @@ describe('ImageUtilsService', () => {
         const result = await promise;
         expect(result).toBe('#000000');
         
+        consoleErrorSpy.mockRestore();
+      });
+    });
+
+    // ────────────────────────────────────────────────────────────────────
+
+    describe('suggestOptimalFormat()', () => {
+      let mockImage: Partial<HTMLImageElement>;
+
+      beforeEach(() => {
+        mockImage = {
+          naturalWidth: 0,
+          naturalHeight: 0,
+          onload: null as any,
+          onerror: null as any,
+          src: '',
+        };
+        global.HTMLImageElement = function() { return mockImage as HTMLImageElement; } as any;
+        global.Image = function() { return mockImage as HTMLImageElement; } as unknown as typeof Image;
+      });
+
+      it('suggests avif for photos (opaque, > 1MP)', async () => {
+        // 1920×1080 = 2 073 600 px > 1 000 000 threshold
+        const file = new File([mockBlob], 'photo.jpg', { type: 'image/jpeg' });
+        vi.spyOn(service, 'getImageDimensions').mockResolvedValue({ width: 1920, height: 1080 });
+        vi.spyOn(service, 'hasTransparency').mockResolvedValue(false);
+        const result = await service.suggestOptimalFormat(file);
+        expect(result).toBe('avif');
+      });
+
+      it('suggests avif for images with transparency', async () => {
+        const file = new File([mockBlob], 'icon.png', { type: 'image/png' });
+        vi.spyOn(service, 'hasTransparency').mockResolvedValue(true);
+        const result = await service.suggestOptimalFormat(file);
+        expect(result).toBe('avif');
+      });
+
+      it('suggests webp for small opaque graphics (< 1MP)', async () => {
+        // 400×300 = 120 000 px < 1 000 000 threshold
+        const file = new File([mockBlob], 'icon.jpg', { type: 'image/jpeg' });
+        vi.spyOn(service, 'getImageDimensions').mockResolvedValue({ width: 400, height: 300 });
+        vi.spyOn(service, 'hasTransparency').mockResolvedValue(false);
+        const result = await service.suggestOptimalFormat(file);
+        expect(result).toBe('webp');
+      });
+
+      it('falls back to webp on error', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const file = new File([mockBlob], 'broken.jpg', { type: 'image/jpeg' });
+        vi.spyOn(service, 'hasTransparency').mockRejectedValue(new Error('canvas fail'));
+        const result = await service.suggestOptimalFormat(file);
+        expect(result).toBe('webp');
         consoleErrorSpy.mockRestore();
       });
     });

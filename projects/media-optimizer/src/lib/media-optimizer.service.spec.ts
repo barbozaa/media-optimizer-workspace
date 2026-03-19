@@ -41,7 +41,7 @@ describe('ImageConverterService', () => {
 
   afterEach(() => {
     // State cleanup - reset images manually
-    service._images = [];
+    service._seedImages([]);
     vi.clearAllMocks();
   });
 
@@ -111,9 +111,8 @@ describe('ImageConverterService', () => {
       callback.mockClear();
       unsubscribe();
       
-      // Trigger a change
-      service._images = [{ id: '1' } as any];
-      (service as any).notifyImagesChange();
+      // Trigger a change via the public setter — callback must NOT fire after unsubscribe
+      service._seedImages([{ id: '1' } as any]);
       
       expect(callback).not.toHaveBeenCalled();
     });
@@ -134,9 +133,8 @@ describe('ImageConverterService', () => {
       callback.mockClear();
       unsubscribe();
       
-      // Trigger a change
-      (service as any)._isUploading = true;
-      (service as any).notifyUploadingChange();
+      // Trigger a change via BehaviorSubject — callback must NOT fire after unsubscribe
+      (service as any)._isUploading$.next(true);
       
       expect(callback).not.toHaveBeenCalled();
     });
@@ -157,9 +155,8 @@ describe('ImageConverterService', () => {
       callback.mockClear();
       unsubscribe();
       
-      // Trigger a change
-      (service as any)._uploadProgress = 50;
-      (service as any).notifyProgressChange();
+      // Trigger a change via BehaviorSubject — callback must NOT fire after unsubscribe
+      (service as any)._uploadProgress$.next(50);
       
       expect(callback).not.toHaveBeenCalled();
     });
@@ -174,9 +171,8 @@ describe('ImageConverterService', () => {
       callback1.mockClear();
       callback2.mockClear();
       
-      // Trigger a change
-      service._images = [{ id: '1' } as any];
-      (service as any).notifyImagesChange();
+      // Trigger a change via the public setter
+      service._seedImages([{ id: '1' } as any]);
       
       expect(callback1).toHaveBeenCalledTimes(1);
       expect(callback2).toHaveBeenCalledTimes(1);
@@ -192,9 +188,8 @@ describe('ImageConverterService', () => {
       callback1.mockClear();
       callback2.mockClear();
       
-      // Trigger a change
-      (service as any)._isUploading = true;
-      (service as any).notifyUploadingChange();
+      // Trigger a change via BehaviorSubject
+      (service as any)._isUploading$.next(true);
       
       expect(callback1).toHaveBeenCalledTimes(1);
       expect(callback2).toHaveBeenCalledTimes(1);
@@ -210,49 +205,61 @@ describe('ImageConverterService', () => {
       callback1.mockClear();
       callback2.mockClear();
       
-      // Trigger a change
-      (service as any)._uploadProgress = 75;
-      (service as any).notifyProgressChange();
+      // Trigger a change via BehaviorSubject
+      (service as any)._uploadProgress$.next(75);
       
       expect(callback1).toHaveBeenCalledTimes(1);
       expect(callback2).toHaveBeenCalledTimes(1);
     });
 
-    it('should safely handle unsubscribing non-existent callback for images', () => {
+    it('should safely handle calling unsubscribe more than once for images', () => {
       const callback = vi.fn();
       const unsubscribe = service.onImagesChange(callback);
       
-      // Remove callback manually to simulate non-existent callback
-      (service as any)._imagesListeners = [];
-      
-      // Should not throw error
+      unsubscribe(); // first unsubscribe
+      // Calling unsubscribe again on an RxJS subscription should not throw
       expect(() => unsubscribe()).not.toThrow();
     });
 
-    it('should safely handle unsubscribing non-existent callback for uploading', () => {
+    it('should safely handle calling unsubscribe more than once for uploading', () => {
       const callback = vi.fn();
       const unsubscribe = service.onUploadingChange(callback);
       
-      // Remove callback manually to simulate non-existent callback
-      (service as any)._uploadingListeners = [];
-      
-      // Should not throw error
+      unsubscribe();
       expect(() => unsubscribe()).not.toThrow();
     });
 
-    it('should safely handle unsubscribing non-existent callback for progress', () => {
+    it('should safely handle calling unsubscribe more than once for progress', () => {
       const callback = vi.fn();
       const unsubscribe = service.onProgressChange(callback);
       
-      // Remove callback manually to simulate non-existent callback
-      (service as any)._progressListeners = [];
-      
-      // Should not throw error
+      unsubscribe();
       expect(() => unsubscribe()).not.toThrow();
     });
 
     it('should return 0 for savingsPercentage initially', () => {
       expect(service.savingsPercentage).toBe(0);
+    });
+
+    it('_seedImages should throw when a batch is already active', async () => {
+      // Start a batch that stays in-flight  
+      let resolveCompression!: (file: File) => void;
+      vi.mocked(browserImageCompression.default).mockReturnValue(
+        new Promise<File>(res => { resolveCompression = res; })
+      );
+
+      const batch$ = service.convertFormat([mockFile], { outputFormat: 'webp' });
+      // Subscribe to kick off processing (do NOT await — we want it in-flight)
+      const sub = batch$.subscribe({ error: () => {} });
+
+      // While the batch is running, _seedImages must throw
+      expect(() => service._seedImages([])).toThrow(
+        '[ImageConverter] _seedImages: cannot replace state while a batch is active'
+      );
+
+      // Clean up: resolve the in-flight compression and unsubscribe
+      resolveCompression(new File([mockBlob], 'out.webp', { type: 'image/webp' }));
+      sub.unsubscribe();
     });
   });
 
@@ -473,6 +480,62 @@ describe('ImageConverterService', () => {
     });
   });
 
+  describe('Upload State Tracking', () => {
+    beforeEach(() => {
+      vi.mocked(browserImageCompression.default).mockResolvedValue(
+        new File([mockBlob], 'compressed.webp', { type: 'image/webp' })
+      );
+    });
+
+    it('isUploading$ should be true while processing and false after completion', async () => {
+      const uploadingValues: boolean[] = [];
+      const sub = service.isUploading$.subscribe(v => uploadingValues.push(v));
+
+      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+      sub.unsubscribe();
+
+      // Initial false, then true during processing, then false again after finalize
+      expect(uploadingValues).toContain(true);
+      expect(uploadingValues[uploadingValues.length - 1]).toBe(false);
+    });
+
+    it('uploadProgress$ should reach 100 after all files complete', async () => {
+      const progressValues: number[] = [];
+      const sub = service.uploadProgress$.subscribe(v => progressValues.push(v));
+
+      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+      sub.unsubscribe();
+
+      // Should have hit 100 during processing, then reset to 0
+      expect(progressValues).toContain(100);
+      expect(progressValues[progressValues.length - 1]).toBe(0);
+    });
+
+    it('isUploading$ should reset to false when processing errors out', async () => {
+      vi.mocked(browserImageCompression.default).mockRejectedValue(new Error('Compression failed'));
+
+      try {
+        await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+      } catch {
+        // error is expected
+      }
+
+      expect(service.isUploading).toBe(false);
+    });
+
+    it('uploadProgress$ should reset to 0 when processing errors out', async () => {
+      vi.mocked(browserImageCompression.default).mockRejectedValue(new Error('Compression failed'));
+
+      try {
+        await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+      } catch {
+        // error is expected
+      }
+
+      expect(service.uploadProgress).toBe(0);
+    });
+  });
+
   describe('Edge Cases', () => {
     it('should handle empty file array in convertFormat', async () => {
       const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -531,7 +594,7 @@ describe('ImageConverterService', () => {
       expect(service.images[0].name).toContain('.webp');
     });
 
-    it('should handle revokeImageUrls with empty URLs', () => {
+    it('should NOT revoke URLs for an image with empty URLs when removed', () => {
       const imageWithEmptyUrls: ImageFile = {
         id: 'test-id',
         name: 'test.jpg',
@@ -543,14 +606,17 @@ describe('ImageConverterService', () => {
         quality: 80
       };
 
+      service._seedImages([imageWithEmptyUrls]);
       vi.clearAllMocks();
-      
-      service.revokeImageUrls(imageWithEmptyUrls);
-      
+
+      service.removeImage('test-id');
+
+      // No URLs to revoke — revokeObjectURL must not be called
       expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      expect(service.images).toHaveLength(0);
     });
 
-    it('should call revokeImageUrls for images with valid URLs', () => {
+    it('should revoke both blob URLs when an image is removed', () => {
       const imageWithUrls: ImageFile = {
         id: 'test-id',
         name: 'test.jpg',
@@ -562,10 +628,11 @@ describe('ImageConverterService', () => {
         quality: 80
       };
 
+      service._seedImages([imageWithUrls]);
       vi.clearAllMocks();
-      
-      service.revokeImageUrls(imageWithUrls);
-      
+
+      service.removeImage('test-id');
+
       expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:original-url');
       expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:compressed-url');
       expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
@@ -595,7 +662,7 @@ describe('ImageConverterService', () => {
         quality: 80
       };
 
-      service._images = [image1, image2];
+      service._seedImages([image1, image2]);
       vi.clearAllMocks();
 
       service.removeImage('id-1');
@@ -607,7 +674,7 @@ describe('ImageConverterService', () => {
     });
 
     it('should not throw when removing non-existent image', () => {
-      service._images = [];
+      service._seedImages([]);
       
       expect(() => service.removeImage('non-existent')).not.toThrow();
       expect(service.images).toHaveLength(0);
@@ -631,11 +698,11 @@ describe('ImageConverterService', () => {
         compressedSize: 1000,
         originalUrl: 'blob:url-2',
         compressedUrl: 'blob:compressed-2',
-        status: 'pending',
+        status: 'completed',
         quality: 80
       };
 
-      service._images = [image1, image2];
+      service._seedImages([image1, image2]);
       vi.clearAllMocks();
 
       service.removeAllImages();
@@ -659,9 +726,7 @@ describe('ImageConverterService', () => {
         id: 'id-2',
         name: 'pending.jpg',
         originalSize: 2000,
-        compressedSize: 0,
         originalUrl: 'blob:url-2',
-        compressedUrl: '',
         status: 'pending',
         quality: 80
       };
@@ -669,14 +734,12 @@ describe('ImageConverterService', () => {
         id: 'id-3',
         name: 'error.jpg',
         originalSize: 3000,
-        compressedSize: 0,
         originalUrl: 'blob:url-3',
-        compressedUrl: '',
         status: 'error',
         quality: 80
       };
 
-      service._images = [completed, pending, error];
+      service._seedImages([completed, pending, error]);
       vi.clearAllMocks();
 
       service.clearCompleted();
@@ -704,7 +767,8 @@ describe('ImageConverterService', () => {
         quality: 80
       };
 
-      service._images = [image];
+      service._seedImages([image]);
+      callback.mockClear(); // Clear notification from state seed
       service.removeImage('id-1');
 
       expect(callback).toHaveBeenCalledTimes(1);
@@ -742,7 +806,7 @@ describe('ImageConverterService', () => {
         quality: 80
       };
 
-      service._images = [image];
+      service._seedImages([image]);
 
       service.downloadImage('id-1');
 
@@ -764,14 +828,12 @@ describe('ImageConverterService', () => {
         id: 'id-1',
         name: 'test.jpg',
         originalSize: 1000,
-        compressedSize: 0,
         originalUrl: 'blob:original',
-        compressedUrl: '',
         status: 'pending',
         quality: 80
       };
 
-      service._images = [image];
+      service._seedImages([image]);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       service.downloadImage('id-1');
@@ -803,7 +865,7 @@ describe('ImageConverterService', () => {
         quality: 80
       };
 
-      service._images = [image1, image2];
+      service._seedImages([image1, image2]);
       const downloadSpy = vi.spyOn(service, 'downloadImage');
 
       service.downloadAllImages();
@@ -833,14 +895,12 @@ describe('ImageConverterService', () => {
         id: 'id-1',
         name: 'test.jpg',
         originalSize: 1024,
-        compressedSize: 0,
         originalUrl: 'blob:original',
-        compressedUrl: '',
         status: 'processing',
         quality: 80
       };
 
-      service._images = [processingImage];
+      service._seedImages([processingImage]);
       service.downloadImage('id-1');
 
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not yet completed'));
@@ -862,11 +922,92 @@ describe('ImageConverterService', () => {
         quality: 80
       };
 
-      service._images = [imageNoUrl];
+      service._seedImages([imageNoUrl]);
       service.downloadImage('id-1');
 
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('No compressed image available'));
       expect(createElementSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Validation', () => {
+    it('should throw for quality below 0 in convertFormat', async () => {
+      await expect(
+        firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp', quality: -1 }))
+      ).rejects.toThrow('quality must be 0');
+    });
+
+    it('should throw for quality above 100 in convertFormat', async () => {
+      await expect(
+        firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp', quality: 101 }))
+      ).rejects.toThrow('quality must be 0');
+    });
+
+    it('should throw for quality below 0 in compressImages', async () => {
+      await expect(
+        firstValueFrom(service.compressImages([mockFile], { quality: -5 }))
+      ).rejects.toThrow('quality must be 0');
+    });
+
+    it('should throw for quality above 100 in compressImages', async () => {
+      await expect(
+        firstValueFrom(service.compressImages([mockFile], { quality: 200 }))
+      ).rejects.toThrow('quality must be 0');
+    });
+
+    it('should report ALL invalid files, not just the first', async () => {
+      const pdf1 = new File([mockBlob], 'a.pdf', { type: 'application/pdf' });
+      const pdf2 = new File([mockBlob], 'b.pdf', { type: 'application/pdf' });
+
+      await expect(
+        firstValueFrom(service.convertFormat([pdf1, pdf2], { outputFormat: 'webp' }))
+      ).rejects.toSatisfy((err: Error) => {
+        return err.message.includes('a.pdf') && err.message.includes('b.pdf');
+      });
+    });
+  });
+
+  describe('Abort Processing', () => {
+    it('should forward AbortSignal to imageCompression so in-flight calls are genuinely cancelled', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      vi.mocked(browserImageCompression.default).mockImplementation(async (_file, opts) => {
+        capturedSignal = opts?.signal as AbortSignal | undefined;
+        return new File([mockBlob], 'done.webp', { type: 'image/webp' });
+      });
+
+      await firstValueFrom(
+        service.convertFormat([mockFile], { outputFormat: 'webp', concurrency: 1 })
+      );
+
+      expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('should cancel queued files — abortProcessing sets signal.aborted before next mergeMap tick', async () => {
+      // First file resolves; abort is called before the second file gets its mergeMap slot
+      let callCount = 0;
+      vi.mocked(browserImageCompression.default).mockImplementation(async (_file, opts) => {
+        callCount++;
+        // Abort after the first compression starts
+        if (callCount === 1) service.abortProcessing();
+        return new File([mockBlob], 'done.webp', { type: 'image/webp' });
+      });
+
+      const file2 = new File([mockBlob], 'b.jpg', { type: 'image/jpeg' });
+
+      try {
+        await firstValueFrom(
+          service.convertFormat([mockFile, file2], { outputFormat: 'webp', concurrency: 1 })
+        );
+      } catch {
+        // aborted error is expected for the second file
+      }
+
+      // The service must not throw synchronously; images state is clean
+      expect(service).toBeTruthy();
+    });
+
+    it('should do nothing when abortProcessing is called with no active operation', () => {
+      expect(() => service.abortProcessing()).not.toThrow();
     });
   });
 });

@@ -23,6 +23,8 @@ describe('Performance Benchmarks', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 1920,
         height: 1080,
+        naturalWidth: 1920,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
@@ -54,6 +56,8 @@ describe('Performance Benchmarks', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 1920,
         height: 1080,
+        naturalWidth: 1920,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
@@ -89,6 +93,8 @@ describe('Performance Benchmarks', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 3840,
         height: 2160,
+        naturalWidth: 3840,
+        naturalHeight: 2160,
         onload: null,
         onerror: null,
         src: ''
@@ -136,22 +142,31 @@ describe('Performance Benchmarks', () => {
 
   describe('isAnimated() Optimization', () => {
     it('should demonstrate improved performance with partial file reading', async () => {
-      // Create large GIF file (10MB)
+      // Build a minimal 2-frame GIF structure at the beginning of a 10MB buffer.
+      // The block-structure parser returns true immediately after finding the
+      // second Image Descriptor (0x2C), without reading the rest of the file,
+      // demonstrating that only the first 128KB chunk is ever loaded.
       const largeGifData = new Uint8Array(10 * 1024 * 1024);
-      
-      // Place NETSCAPE2.0 marker at the beginning
-      const netscapeMarker = new TextEncoder().encode('NETSCAPE2.0');
-      netscapeMarker.forEach((byte, i) => {
-        largeGifData[50 + i] = byte;
-      });
+      // Header + LSD (no GCT)
+      largeGifData.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0); // GIF89a
+      largeGifData[6] = 1; largeGifData[7] = 0; // width = 1
+      largeGifData[8] = 1; largeGifData[9] = 0; // height = 1
+      // Frame 1 Image Descriptor at 13
+      largeGifData[13] = 0x2C;
+      largeGifData[18] = 1; largeGifData[20] = 1; // w=1, h=1
+      largeGifData[23] = 0x02; // LZW min code size
+      largeGifData[24] = 0x02; largeGifData[25] = 0x4C; largeGifData[26] = 0x01;
+      largeGifData[27] = 0x00; // sub-block terminator
+      // Frame 2 Image Descriptor at 28 → triggers return true
+      largeGifData[28] = 0x2C;
 
       const gifFile = new File([largeGifData], 'large.gif', { type: 'image/gif' });
 
-      // Mock slice to return only first 64KB
-      const first64KB = largeGifData.buffer.slice(0, 64 * 1024);
+      // Mock slice to return only first 128KB (proving we never read the full 10MB)
+      const first128KB = largeGifData.buffer.slice(0, 128 * 1024);
       Object.defineProperty(gifFile, 'slice', {
         value: () => ({
-          arrayBuffer: () => Promise.resolve(first64KB)
+          arrayBuffer: () => Promise.resolve(first128KB)
         }),
         writable: true
       });
@@ -175,6 +190,8 @@ describe('Performance Benchmarks', () => {
       const mockImage: Partial<HTMLImageElement> = {
         width: 1920,
         height: 1080,
+        naturalWidth: 1920,
+        naturalHeight: 1080,
         onload: null,
         onerror: null,
         src: ''
