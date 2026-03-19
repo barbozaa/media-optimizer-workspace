@@ -57,6 +57,16 @@ export class LRUCache<K, V> {
   }
 
   /**
+   * Remove a specific entry from the cache.
+   * Useful for manual cache invalidation when the underlying data changes.
+   * O(1) operation.
+   * @returns true if the entry existed and was deleted, false otherwise.
+   */
+  delete(key: K): boolean {
+    return this.cache.delete(key);
+  }
+
+  /**
    * Clear all cache entries
    */
   clear(): void {

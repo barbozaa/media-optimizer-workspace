@@ -2,36 +2,9 @@ import { Injectable } from '@angular/core';
 import imageCompression from 'browser-image-compression';
 import { ImageHelpers } from './shared/image-helpers';
 import { LRUCache } from './shared/lru-cache';
-
-/**
- * Image formats supported by the utilities
- * @public
- */
-export type ImageFormat = 'webp' | 'jpeg' | 'png' | 'avif';
-
-/**
- * Detailed image information
- * @interface ImageInfo
- * @public
- */
-export interface ImageInfo {
-  /** File name */
-  name: string;
-  /** File size in bytes */
-  size: number;
-  /** Formatted size string */
-  formattedSize: string;
-  /** Image format/type */
-  format: ImageFormat;
-  /** Image width in pixels */
-  width: number;
-  /** Image height in pixels */
-  height: number;
-  /** Aspect ratio (width/height) */
-  aspectRatio: number;
-  /** Aspect ratio as string (e.g., "16:9", "1:1") */
-  aspectRatioString: string;
-}
+import { VALID_MIME_TYPES, VALID_EXTENSIONS, CompressionError, ValidationError } from './shared/types';
+import type { ImageFormat, ImageInfo } from './shared/types';
+export type { ImageFormat, ImageInfo };
 
 /**
  * Pure utilities for image analysis, validation, and manipulation.
@@ -75,12 +48,22 @@ export class ImageUtilsService {
   // ============================================================================
   // CONSTANTS
   // ============================================================================
-  
+
+  /**
+   * Format-specific compression factors used by estimateCompressedSize and getBestQuality.
+   * Single source of truth — update here to affect both methods.
+   */
+  private readonly COMPRESSION_FACTORS: Record<ImageFormat, number> = {
+    webp: 0.65,
+    avif: 0.50,
+    png:  0.75,
+    jpeg: 0.85,
+  };
+
   private readonly DIMENSIONS_CACHE_SIZE = 100;
   private readonly INFO_CACHE_SIZE = 50;
   private readonly TRANSPARENCY_CACHE_SIZE = 100;
   private readonly DOMINANT_COLOR_CACHE_SIZE = 50;
-  private readonly IMAGE_LOAD_TIMEOUT_MS = 10000;
   private readonly MAX_SAFE_SIZE_MB = 50;
   private readonly TRANSPARENCY_CHECK_MAX_DIM = 200;
 
@@ -122,14 +105,10 @@ export class ImageUtilsService {
    * @public
    */
   isValidImage(file: File): boolean {
-    const validMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'];
-    const validExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif'];
-    
-    const hasValidMime = validMimeTypes.includes(file.type);
-    const hasValidExtension = validExtensions.some(ext => 
+    const hasValidMime = (VALID_MIME_TYPES as readonly string[]).includes(file.type);
+    const hasValidExtension = (VALID_EXTENSIONS as readonly string[]).some(ext =>
       file.name.toLowerCase().endsWith(ext)
     );
-    
     return hasValidMime && hasValidExtension;
   }
 
@@ -171,44 +150,13 @@ export class ImageUtilsService {
     if (file.size > maxBytes) {
       throw new Error(`Image too large: ${this.formatBytes(file.size)}`);
     }
-    
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      
-      // Add timeout to prevent hanging
-      const timeout = setTimeout(() => {
-        // Clean up event handlers to prevent memory leak
-        img.onload = null;
-        img.onerror = null;
-        img.src = '';
-        URL.revokeObjectURL(url);
-        reject(new Error('Image load timeout'));
-      }, this.IMAGE_LOAD_TIMEOUT_MS);
-      
-      img.onload = () => {
-        clearTimeout(timeout);
-        URL.revokeObjectURL(url);
-        const result = { width: img.width, height: img.height };
-        
-        // Store in cache
-        this.dimensionsCache.set(cacheKey, result);
-        
-        resolve(result);
-      };
-      
-      img.onerror = () => {
-        clearTimeout(timeout);
-        // Clean up event handlers
-        img.onload = null;
-        img.onerror = null;
-        img.src = '';
-        URL.revokeObjectURL(url);
-        reject(new Error('Failed to load image dimensions'));
-      };
-      
-      img.src = url;
-    });
+
+    // Delegate to ImageHelpers.loadImage — it applies a 10-second timeout,
+    // cleans up event handlers, and revokes the object URL in all code paths.
+    const img = await ImageHelpers.loadImage(file);
+    const result = { width: img.naturalWidth, height: img.naturalHeight };
+    this.dimensionsCache.set(cacheKey, result);
+    return result;
   }
 
   /**
@@ -253,16 +201,36 @@ export class ImageUtilsService {
   async toBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result);
-        } else {
-          reject(new Error('Failed to convert to base64'));
+      let settled = false;
+
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reader.abort();
+          reject(new Error('toBase64 timeout: file read exceeded 15 seconds'));
+        }
+      }, 15_000);
+
+      const settle = (fn: () => void): void => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          fn();
         }
       };
-      
-      reader.onerror = () => reject(new Error('Failed to convert file to base64'));
+
+      reader.onload = () =>
+        settle(() => {
+          if (typeof reader.result === 'string') {
+            resolve(reader.result);
+          } else {
+            reject(new Error('Failed to convert to base64'));
+          }
+        });
+
+      reader.onerror = () =>
+        settle(() => reject(new Error('Failed to convert file to base64')));
+
       reader.readAsDataURL(file);
     });
   }
@@ -297,7 +265,7 @@ export class ImageUtilsService {
     
     const dimensions = await this.getImageDimensions(file);
     const aspectRatio = dimensions.width / dimensions.height;
-    const gcd = this.calculateGCD(dimensions.width, dimensions.height);
+    const gcd = ImageHelpers.calculateGCD(dimensions.width, dimensions.height);
     const aspectWidth = dimensions.width / gcd;
     const aspectHeight = dimensions.height / gcd;
     
@@ -350,7 +318,7 @@ export class ImageUtilsService {
       
       return await imageCompression(file, options);
     } catch (error) {
-      throw new Error('Failed to create thumbnail');
+      throw new CompressionError('Failed to create thumbnail', error);
     }
   }
 
@@ -381,7 +349,7 @@ export class ImageUtilsService {
     const [width, height] = ratio.split(':').map(Number);
     
     if (!width || !height) {
-      throw new Error('Invalid aspect ratio format. Use "width:height" (e.g., "16:9")');
+      throw new ValidationError('Invalid aspect ratio format. Use "width:height" (e.g., "16:9")');
     }
     
     const dimensions = await this.getImageDimensions(file);
@@ -410,30 +378,17 @@ export class ImageUtilsService {
    * 
    * @public
    */
-  estimateCompressedSize(file: File, quality: number): number {
-    const format = this.detectImageFormat(file.type);
-    
-    // Base compression factors by format
-    let baseCompressionFactor: number;
-    if (format === 'webp') {
-      baseCompressionFactor = 0.65;
-    } else if (format === 'png') {
-      baseCompressionFactor = 0.75;
-    } else if (format === 'avif') {
-      baseCompressionFactor = 0.50; // AVIF superior compression
-    } else {
-      baseCompressionFactor = 0.85; // jpeg
-    }
-    
-    // Adjust for quality (non-linear relationship)
-    const qualityFactor = quality / 100;
-    const adjustedQuality = Math.pow(qualityFactor, 0.8); // Power curve for better accuracy
-    
-    // File size affects compression efficiency (larger files compress better)
+  estimateCompressedSize(file: File, quality: number, targetFormat?: ImageFormat): number {
+    const format = targetFormat ?? this.detectImageFormat(file.type);
+    const baseCompressionFactor = this.COMPRESSION_FACTORS[format];
+
+    // Non-linear quality curve for better accuracy
+    const adjustedQuality = Math.pow(quality / 100, 0.8);
+
+    // Larger files compress better (diminishing returns on small files)
     const sizeMB = file.size / (1024 * 1024);
     const sizeAdjustment = Math.max(0.7, Math.min(1.0, 1 - (sizeMB / 50)));
-    
-    // Final estimate
+
     return Math.round(file.size * adjustedQuality * baseCompressionFactor * sizeAdjustment);
   }
 
@@ -455,35 +410,19 @@ export class ImageUtilsService {
    * 
    * @public
    */
-  getBestQuality(file: File, targetSizeMB: number): number {
+  getBestQuality(file: File, targetSizeMB: number, targetFormat?: ImageFormat): number {
     const targetBytes = targetSizeMB * 1024 * 1024;
-    const format = this.detectImageFormat(file.type);
-    
-    // Format-specific compression factors
-    let compressionFactor: number;
-    if (format === 'webp') {
-      compressionFactor = 0.65;
-    } else if (format === 'png') {
-      compressionFactor = 0.75;
-    } else if (format === 'avif') {
-      compressionFactor = 0.50;
-    } else {
-      compressionFactor = 0.85; // jpeg
-    }
-    
-    // File size adjustment
+    const format = targetFormat ?? this.detectImageFormat(file.type);
+    const compressionFactor = this.COMPRESSION_FACTORS[format];
+
     const sizeMB = file.size / (1024 * 1024);
     const sizeAdjustment = Math.max(0.7, Math.min(1.0, 1 - (sizeMB / 50)));
-    
-    // Calculate quality with non-linear adjustment
+
     const qualityRatio = targetBytes / (file.size * compressionFactor * sizeAdjustment);
-    
     if (qualityRatio >= 1) return 100; // Already smaller than target
-    
-    // Inverse power curve for quality calculation
+
     const adjustedQuality = Math.pow(qualityRatio, 1.25);
     const quality = Math.round(adjustedQuality * 100);
-    
     return Math.max(10, Math.min(100, quality));
   }
 
@@ -541,17 +480,13 @@ export class ImageUtilsService {
     maxWidth: number,
     maxHeight: number
   ): Promise<boolean> {
-    try {
-      const { width, height } = await this.getImageDimensions(file);
-      
-      return width >= minWidth && 
-             width <= maxWidth && 
-             height >= minHeight && 
-             height <= maxHeight;
-    } catch (error) {
-      console.error('[ImageUtils] Failed to validate dimensions:', error);
-      return false;
-    }
+    const { width, height } = await this.getImageDimensions(file);
+    return (
+      width  >= minWidth  &&
+      width  <= maxWidth  &&
+      height >= minHeight &&
+      height <= maxHeight
+    );
   }
 
   /**
@@ -662,11 +597,14 @@ export class ImageUtilsService {
             const minH = options.minHeight ?? 0;
             const maxW = options.maxWidth ?? Number.POSITIVE_INFINITY;
             const maxH = options.maxHeight ?? Number.POSITIVE_INFINITY;
-            
-            const dimensionsValid = await this.validateDimensions(file, minW, minH, maxW, maxH);
-            
+
+            // Single call — validate and retrieve dimensions in one shot
+            const { width, height } = await this.getImageDimensions(file);
+            const dimensionsValid =
+              width >= minW && width <= maxW &&
+              height >= minH && height <= maxH;
+
             if (!dimensionsValid) {
-              const { width, height } = await this.getImageDimensions(file);
               errors.push(`Dimensions ${width}x${height} are outside allowed range (${minW}x${minH} - ${maxW}x${maxH})`);
             }
           } catch (error) {
@@ -752,29 +690,15 @@ export class ImageUtilsService {
       const imageData = context.getImageData(0, 0, scaledW, scaledH);
       const data = imageData.data;
       
-      // SIMD-optimized: Check in blocks using 32-bit view
-      // Use try-catch for compatibility with different environments
-      try {
-        const data32 = new Uint32Array(data.buffer);
-        
-        // On little-endian systems (most common), RGBA bytes become 0xAABBGGRR as uint32
-        // So alpha is in the highest byte: 0xFF000000
-        for (let i = 0; i < data32.length; i++) {
-          // Check if alpha byte is less than 255 (has some transparency)
-          // Shift right by 24 to get alpha byte to lowest position
-          const alpha = (data32[i] >>> 24) & 0xFF;
-          if (alpha < 255) {
-            this.transparencyCache.set(cacheKey, true);
-            return true;
-          }
-        }
-      } catch (error) {
-        // Fallback to byte-by-byte check if Uint32Array fails
-        for (let i = 3; i < data.length; i += 4) {
-          if (data[i] < 255) {
-            this.transparencyCache.set(cacheKey, true);
-            return true;
-          }
+      // Byte-accurate alpha check.
+      // Uint32Array re-interpretation is an endianness-dependent optimization
+      // (alpha is at a different bit position on big-endian vs little-endian).
+      // The byte-by-byte approach is always correct, and on a 200×200 image
+      // (40 000 iterations) the cost is negligible.
+      for (let i = 3; i < data.length; i += 4) {
+        if (data[i] < 255) {
+          this.transparencyCache.set(cacheKey, true);
+          return true;
         }
       }
       
@@ -848,11 +772,13 @@ export class ImageUtilsService {
     try {
       const { width, height } = await this.getImageDimensions(file);
       
-      // Aggressive scaling for faster processing
+      // Scale down to the analysis window. cap at 1 to avoid upscaling images
+      // that are already smaller than the window (upscaling wastes canvas work
+      // and bilinear interpolation does not add any real colour information).
       const maxDimension = ImageHelpers.DOMINANT_COLOR_SIZE;
-      const scale = Math.min(maxDimension / width, maxDimension / height);
-      const scaledWidth = Math.floor(width * scale);
-      const scaledHeight = Math.floor(height * scale);
+      const scale = Math.min(1, maxDimension / Math.max(width, height));
+      const scaledWidth  = Math.max(1, Math.floor(width  * scale));
+      const scaledHeight = Math.max(1, Math.floor(height * scale));
       
       const canvas = ImageHelpers.createCanvas(scaledWidth, scaledHeight);
       const ctx = canvas.getContext('2d', { 
@@ -898,15 +824,6 @@ export class ImageUtilsService {
     return ImageHelpers.detectImageFormat(mimeType);
   }
 
-  /**
-   * Calculates Greatest Common Divisor for aspect ratio calculation.
-   * Uses Euclidean algorithm.
-   * @private
-   */
-  private calculateGCD(a: number, b: number): number {
-    return ImageHelpers.calculateGCD(a, b);
-  }
-  
   /**
    * Clears all internal caches.
    * 
@@ -975,8 +892,9 @@ export class ImageUtilsService {
       const hasAlpha = await this.hasTransparency(file);
       
       if (hasAlpha) {
-        // WebP or PNG for transparency, WebP is more efficient
-        return 'webp';
+        // AVIF: supports alpha channel, ~30% smaller than WebP at equal quality,
+        // and has >96% browser support as of 2025. Strictly better than WebP here.
+        return 'avif';
       }
       
       // For non-transparent images, analyze complexity
@@ -986,11 +904,13 @@ export class ImageUtilsService {
       const isLikelyPhoto = info.width * info.height > 1000000; // > 1MP
       
       if (isLikelyPhoto) {
-        // JPEG is still good for photos without transparency
-        return 'jpeg';
+        // AVIF: 30–50% better compression than JPEG at equal visual quality.
+        // Safe default in 2025+ with >96% browser support.
+        return 'avif';
       }
       
-      // For everything else, WebP provides best balance
+      // Small graphics (icons, diagrams, UI elements): WebP — fast encode,
+      // universal support, good lossless mode for flat-color artwork.
       return 'webp';
     } catch (error) {
       console.error('[ImageUtils] Failed to suggest optimal format:', error);

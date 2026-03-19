@@ -2,12 +2,19 @@
  * Public API Surface of media-optimizer
  */
 
-export { 
+export {
   ImageConverterService,
+  ValidationError,
+  AbortError,
+  CompressionError,
+  MediaOptimizerError,
   type ImageFile,
+  type CompletedImageFile,
   type ImageFormat,
+  type ImageProcessingStatus,
   type ConvertOptions,
-  type CompressOptions
+  type CompressOptions,
+  type BaseProcessOptions,
 } from './lib/media-optimizer.service';
 
 export {
