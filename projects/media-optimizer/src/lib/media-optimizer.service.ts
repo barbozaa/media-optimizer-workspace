@@ -1,7 +1,7 @@
 import { Injectable, OnDestroy } from '@angular/core';
 import { Observable, BehaviorSubject, from, defer, EMPTY, throwError } from 'rxjs';
 import { map, mergeMap, tap, catchError, finalize } from 'rxjs/operators';
-import imageCompression from 'browser-image-compression';
+import { NativeImageCodec } from './shared/image-codec';
 import { ImageHelpers } from './shared/image-helpers';
 import {
   VALID_MIME_TYPES,
@@ -695,7 +695,6 @@ export class ImageConverterService implements OnDestroy {
         quality: options.quality ?? 80,
         maxSizeMB: options.maxSizeMB ?? 10,
         maxWidthOrHeight: options.maxWidthOrHeight ?? 1920,
-        useWebWorker: options.useWebWorker ?? false
       }, signal));
     }).pipe(
       map(compressedFile => ({ imageFile, compressedFile })),
@@ -709,26 +708,17 @@ export class ImageConverterService implements OnDestroy {
   }
   
   /**
-   * Executes the actual compression using browser-image-compression.
+   * Encodes a single image using the native OffscreenCanvas codec pipeline.
    * The `signal` is forwarded so that `abortProcessing()` genuinely cancels
-   * in-flight compression, not just queued files.
+   * in-flight work, not just queued files.
    * @private
    */
   private async compressImage(
     file: File,
-    options: Required<Omit<ConvertOptions, 'outputFormat' | 'concurrency' | 'sortOrder'>> & { outputFormat: ImageFormat },
+    options: { outputFormat: ImageFormat; quality: number; maxSizeMB: number; maxWidthOrHeight: number },
     signal?: AbortSignal
   ): Promise<File> {
-    const compressionOptions: Parameters<typeof imageCompression>[1] = {
-      maxSizeMB: options.maxSizeMB,
-      maxWidthOrHeight: options.maxWidthOrHeight,
-      useWebWorker: options.useWebWorker,
-      fileType: `image/${options.outputFormat}`,
-      initialQuality: options.quality / 100,
-      signal,
-    };
-
-    return await imageCompression(file, compressionOptions);
+    return NativeImageCodec.compress(file, { ...options, signal });
   }
   
   // ============================================================================

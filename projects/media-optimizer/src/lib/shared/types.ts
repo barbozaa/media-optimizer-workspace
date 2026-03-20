@@ -148,7 +148,10 @@ export interface BaseProcessOptions {
   maxSizeMB?: number;
   /** Maximum dimension (width or height) in pixels. Default: 1920 */
   maxWidthOrHeight?: number;
-  /** Use browser-image-compression's internal Web Worker. Default: false */
+  /**
+   * @deprecated No longer used. The NativeImageCodec pipeline encodes natively
+   * on the calling thread. This option will be removed in a future major version.
+   */
   useWebWorker?: boolean;
   /** Parallel processing limit. Default: auto-detected from hardware */
   concurrency?: number;

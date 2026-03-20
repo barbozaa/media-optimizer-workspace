@@ -2,12 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { firstValueFrom } from 'rxjs';
 import { ImageConverterService } from './media-optimizer.service';
 import type { ImageFormat, ConvertOptions, CompressOptions, ImageFile } from './media-optimizer.service';
-import * as browserImageCompression from 'browser-image-compression';
-
-// Mock browser-image-compression
-vi.mock('browser-image-compression', () => ({
-  default: vi.fn()
-}));
+import { NativeImageCodec } from './shared/image-codec';
 
 describe('ImageConverterService', () => {
   let service: ImageConverterService;
@@ -42,6 +37,7 @@ describe('ImageConverterService', () => {
   afterEach(() => {
     // State cleanup - reset images manually
     service._seedImages([]);
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -96,7 +92,7 @@ describe('ImageConverterService', () => {
       callback.mockClear(); // Clear initial call
       
       const mockCompressedFile = new File([mockBlob], 'test.webp', { type: 'image/webp' });
-      vi.mocked(browserImageCompression.default).mockResolvedValue(mockCompressedFile);
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(mockCompressedFile);
       
       await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
       
@@ -244,7 +240,7 @@ describe('ImageConverterService', () => {
     it('_seedImages should throw when a batch is already active', async () => {
       // Start a batch that stays in-flight  
       let resolveCompression!: (file: File) => void;
-      vi.mocked(browserImageCompression.default).mockReturnValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockReturnValue(
         new Promise<File>(res => { resolveCompression = res; })
       );
 
@@ -328,7 +324,7 @@ describe('ImageConverterService', () => {
 
   describe('convertFormat', () => {
     beforeEach(() => {
-      vi.mocked(browserImageCompression.default).mockResolvedValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(
         new File([mockBlob], 'compressed.webp', { type: 'image/webp' })
       );
     });
@@ -338,7 +334,7 @@ describe('ImageConverterService', () => {
       
       expect(service.images.length).toBe(1);
       expect(service.images[0].status).toBe('completed');
-      expect(browserImageCompression.default).toHaveBeenCalled();
+      expect(NativeImageCodec.compress).toHaveBeenCalled();
     });
 
     it('should convert to png format', async () => {
@@ -356,7 +352,7 @@ describe('ImageConverterService', () => {
     });
 
     it('should convert to avif format', async () => {
-      vi.mocked(browserImageCompression.default).mockResolvedValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(
         new File([mockBlob], 'compressed.avif', { type: 'image/avif' })
       );
 
@@ -364,9 +360,9 @@ describe('ImageConverterService', () => {
       
       expect(service.images.length).toBe(1);
       expect(service.images[0].status).toBe('completed');
-      expect(browserImageCompression.default).toHaveBeenCalledWith(
+      expect(NativeImageCodec.compress).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ fileType: 'image/avif' })
+        expect.objectContaining({ outputFormat: 'avif' })
       );
     });
 
@@ -374,14 +370,14 @@ describe('ImageConverterService', () => {
       const options: ConvertOptions = { outputFormat: 'webp', quality: 70 };
       await firstValueFrom(service.convertFormat([mockFile], options));
       
-      expect(browserImageCompression.default).toHaveBeenCalledWith(
+      expect(NativeImageCodec.compress).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ initialQuality: 0.7 })
+        expect.objectContaining({ quality: 70 })
       );
     });
 
     it('should handle errors during conversion', async () => {
-      vi.mocked(browserImageCompression.default).mockRejectedValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockRejectedValue(
         new Error('Compression failed')
       );
 
@@ -415,7 +411,7 @@ describe('ImageConverterService', () => {
   describe('compressImages', () => {
     beforeEach(() => {
       const smallerBlob = new Blob(['smaller'], { type: 'image/jpeg' });
-      vi.mocked(browserImageCompression.default).mockResolvedValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(
         new File([smallerBlob], 'compressed.jpg', { type: 'image/jpeg' })
       );
     });
@@ -436,10 +432,10 @@ describe('ImageConverterService', () => {
       
       await firstValueFrom(service.compressImages([mockFile], options));
       
-      expect(browserImageCompression.default).toHaveBeenCalledWith(
+      expect(NativeImageCodec.compress).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
-          initialQuality: 0.6,
+          quality: 60,
           maxSizeMB: 0.5,
           maxWidthOrHeight: 1024
         })
@@ -465,7 +461,7 @@ describe('ImageConverterService', () => {
     });
 
     it('should handle compression errors', async () => {
-      vi.mocked(browserImageCompression.default).mockRejectedValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockRejectedValue(
         new Error('Compression failed')
       );
 
@@ -482,7 +478,7 @@ describe('ImageConverterService', () => {
 
   describe('Upload State Tracking', () => {
     beforeEach(() => {
-      vi.mocked(browserImageCompression.default).mockResolvedValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(
         new File([mockBlob], 'compressed.webp', { type: 'image/webp' })
       );
     });
@@ -512,7 +508,7 @@ describe('ImageConverterService', () => {
     });
 
     it('isUploading$ should reset to false when processing errors out', async () => {
-      vi.mocked(browserImageCompression.default).mockRejectedValue(new Error('Compression failed'));
+      vi.spyOn(NativeImageCodec, 'compress').mockRejectedValue(new Error('Compression failed'));
 
       try {
         await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
@@ -524,7 +520,7 @@ describe('ImageConverterService', () => {
     });
 
     it('uploadProgress$ should reset to 0 when processing errors out', async () => {
-      vi.mocked(browserImageCompression.default).mockRejectedValue(new Error('Compression failed'));
+      vi.spyOn(NativeImageCodec, 'compress').mockRejectedValue(new Error('Compression failed'));
 
       try {
         await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
@@ -567,7 +563,7 @@ describe('ImageConverterService', () => {
 
     it('should handle PNG file type detection', () => {
       const pngFile = new File([mockBlob], 'test.png', { type: 'image/png' });
-      vi.mocked(browserImageCompression.default).mockResolvedValue(pngFile);
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(pngFile);
       
       return firstValueFrom(service.compressImages([pngFile])).then(() => {
         expect(service.images[0]).toBeDefined();
@@ -576,7 +572,7 @@ describe('ImageConverterService', () => {
 
     it('should handle WebP file type detection', () => {
       const webpFile = new File([mockBlob], 'test.webp', { type: 'image/webp' });
-      vi.mocked(browserImageCompression.default).mockResolvedValue(webpFile);
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(webpFile);
       
       return firstValueFrom(service.compressImages([webpFile])).then(() => {
         expect(service.images[0]).toBeDefined();
@@ -585,7 +581,7 @@ describe('ImageConverterService', () => {
 
     it('should handle file name without extension', async () => {
       const file = new File([mockBlob], 'testfile', { type: 'image/jpeg' });
-      vi.mocked(browserImageCompression.default).mockResolvedValue(
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(
         new File([mockBlob], 'compressed.webp', { type: 'image/webp' })
       );
       
@@ -968,10 +964,10 @@ describe('ImageConverterService', () => {
   });
 
   describe('Abort Processing', () => {
-    it('should forward AbortSignal to imageCompression so in-flight calls are genuinely cancelled', async () => {
+    it('should forward AbortSignal to NativeImageCodec.compress so in-flight calls are genuinely cancelled', async () => {
       let capturedSignal: AbortSignal | undefined;
-      vi.mocked(browserImageCompression.default).mockImplementation(async (_file, opts) => {
-        capturedSignal = opts?.signal as AbortSignal | undefined;
+      vi.spyOn(NativeImageCodec, 'compress').mockImplementation(async (_file, opts) => {
+        capturedSignal = opts?.signal;
         return new File([mockBlob], 'done.webp', { type: 'image/webp' });
       });
 
@@ -985,7 +981,7 @@ describe('ImageConverterService', () => {
     it('should cancel queued files — abortProcessing sets signal.aborted before next mergeMap tick', async () => {
       // First file resolves; abort is called before the second file gets its mergeMap slot
       let callCount = 0;
-      vi.mocked(browserImageCompression.default).mockImplementation(async (_file, opts) => {
+      vi.spyOn(NativeImageCodec, 'compress').mockImplementation(async (_file, opts) => {
         callCount++;
         // Abort after the first compression starts
         if (callCount === 1) service.abortProcessing();
