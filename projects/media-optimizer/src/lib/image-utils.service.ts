@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import imageCompression from 'browser-image-compression';
+import { NativeImageCodec } from './shared/image-codec';
 import { ImageHelpers } from './shared/image-helpers';
 import { LRUCache } from './shared/lru-cache';
 import { VALID_MIME_TYPES, VALID_EXTENSIONS, CompressionError, ValidationError } from './shared/types';
@@ -308,15 +308,12 @@ export class ImageUtilsService {
     try {
       const format = this.detectImageFormat(file.type);
       
-      const options = {
+      return await NativeImageCodec.compress(file, {
+        outputFormat: format,
+        quality: 80,
         maxSizeMB: 0.1,
         maxWidthOrHeight: maxSize,
-        useWebWorker: false,
-        fileType: `image/${format}`,
-        initialQuality: 0.8
-      };
-      
-      return await imageCompression(file, options);
+      });
     } catch (error) {
       throw new CompressionError('Failed to create thumbnail', error);
     }
@@ -378,14 +375,44 @@ export class ImageUtilsService {
    * 
    * @public
    */
+  /**
+   * Format-specific expansion ratios when the **source** format is converted to PNG.
+   * PNG is lossless — it stores raw RGBA pixels + deflate.  A file that was
+   * already lossy-compressed (JPEG/WebP/AVIF) is typically much smaller than
+   * the raw-pixel representation, so the PNG output is larger.
+   * Approximate raw->deflated factor: 4 bytes/px * 0.55 deflate ≈ 2.2 bytes/px.
+   * @private
+   */
+  private readonly PNG_EXPANSION: Record<ImageFormat, number> = {
+    jpeg: 3.2,   // JPEG photos are ~3× smaller than their PNG equivalent
+    webp: 2.8,   // WebP lossy is similar
+    avif: 3.0,
+    png:  1.0,   // already PNG → stays roughly the same
+  };
+
   estimateCompressedSize(file: File, quality: number, targetFormat?: ImageFormat): number {
-    const format = targetFormat ?? this.detectImageFormat(file.type);
+    const sourceFormat = this.detectImageFormat(file.type);
+    const format = targetFormat ?? sourceFormat;
+
+    // ── PNG fast-path ──────────────────────────────────────────────────────
+    // PNG is lossless; quality has no effect.  Output size depends on pixel
+    // count, not on the compressed source size.  Estimate from cached dims
+    // when available, otherwise use an empirical expansion factor based on
+    // the source format (lossy sources unpack to larger PNG files).
+    if (format === 'png') {
+      const cacheKey = this.getCacheKey(file);
+      const dims = this.dimensionsCache.get(cacheKey);
+      if (dims) {
+        // ~2.2 bytes per pixel after PNG deflate (empirical average)
+        return Math.round(dims.width * dims.height * 2.2);
+      }
+      // No dims cached yet — fall back to expansion ratio
+      return Math.round(file.size * this.PNG_EXPANSION[sourceFormat]);
+    }
+
+    // ── Lossy formats ──────────────────────────────────────────────────────
     const baseCompressionFactor = this.COMPRESSION_FACTORS[format];
-
-    // Non-linear quality curve for better accuracy
     const adjustedQuality = Math.pow(quality / 100, 0.8);
-
-    // Larger files compress better (diminishing returns on small files)
     const sizeMB = file.size / (1024 * 1024);
     const sizeAdjustment = Math.max(0.7, Math.min(1.0, 1 - (sizeMB / 50)));
 
@@ -425,6 +452,62 @@ export class ImageUtilsService {
     const quality = Math.round(adjustedQuality * 100);
     return Math.max(10, Math.min(100, quality));
   }
+
+  /**
+   * Returns the subset of `ImageFormat` values that the current browser can
+   * **encode** (not just decode).  JPEG and PNG are always included; WebP and
+   * AVIF are probed at runtime because some browsers decode them but cannot
+   * encode via `OffscreenCanvas.convertToBlob`.
+   *
+   * The result is memoised after the first call so subsequent calls are free.
+   *
+   * @returns Promise resolving to an array of supported `ImageFormat` values
+   *
+   * @example
+   * ```typescript
+   * const formats = await imageUtils.getSupportedFormats();
+   * // e.g. ['webp', 'jpeg', 'png']  (avif absent on Firefox)
+   * ```
+   *
+   * @public
+   */
+  async getSupportedFormats(): Promise<ImageFormat[]> {
+    if (ImageUtilsService._supportedFormatsCache) {
+      return ImageUtilsService._supportedFormatsCache;
+    }
+    const candidates: Array<{ format: ImageFormat; mime: string }> = [
+      { format: 'webp',  mime: 'image/webp'  },
+      { format: 'avif',  mime: 'image/avif'  },
+      { format: 'jpeg',  mime: 'image/jpeg'  },
+      { format: 'png',   mime: 'image/png'   },
+    ];
+    const supported: ImageFormat[] = [];
+    for (const { format, mime } of candidates) {
+      // JPEG and PNG are universally supported — no probe needed.
+      if (mime === 'image/jpeg' || mime === 'image/png') {
+        supported.push(format);
+        continue;
+      }
+      try {
+        const probe = new OffscreenCanvas(1, 1);
+        // Must initialize a context and draw a pixel — some browsers return
+        // 'image/png' from convertToBlob on a context-less canvas regardless
+        // of the requested type, giving a false "unsupported" result.
+        const ctx = probe.getContext('2d')!;
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(0, 0, 1, 1);
+        const blob  = await probe.convertToBlob({ type: mime, quality: 0.5 });
+        if (blob.type === mime) supported.push(format);
+      } catch {
+        // format not supported — skip
+      }
+    }
+    ImageUtilsService._supportedFormatsCache = supported;
+    return supported;
+  }
+
+  /** @internal Memo cache so we only probe the browser once per page load. */
+  private static _supportedFormatsCache: ImageFormat[] | null = null;
 
   /**
    * Formats bytes to human-readable format (KB, MB, GB).

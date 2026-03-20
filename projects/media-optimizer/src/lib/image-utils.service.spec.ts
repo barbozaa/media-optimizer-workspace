@@ -1,11 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ImageUtilsService } from './image-utils.service';
-import * as browserImageCompression from 'browser-image-compression';
-
-// Mock browser-image-compression
-vi.mock('browser-image-compression', () => ({
-  default: vi.fn()
-}));
+import { NativeImageCodec } from './shared/image-codec';
 
 // Mock ProgressEvent for FileReader tests
 class MockProgressEvent {
@@ -28,6 +23,10 @@ describe('ImageUtilsService', () => {
     // Mock URL.createObjectURL and revokeObjectURL
     global.URL.createObjectURL = vi.fn(() => 'blob:mock-url-' + Math.random());
     global.URL.revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('should be created', () => {
@@ -302,16 +301,15 @@ describe('ImageUtilsService', () => {
       const compressedBlob = new Blob(['compressed'], { type: 'image/jpeg' });
       const compressedFile = new File([compressedBlob], 'thumb.jpg', { type: 'image/jpeg' });
       
-      vi.mocked(browserImageCompression.default).mockResolvedValue(compressedFile);
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(compressedFile);
 
       const thumbnail = await service.createThumbnail(mockFile);
 
-      expect(browserImageCompression.default).toHaveBeenCalledWith(mockFile, {
+      expect(NativeImageCodec.compress).toHaveBeenCalledWith(mockFile, {
+        outputFormat: 'jpeg',
+        quality: 80,
         maxSizeMB: 0.1,
         maxWidthOrHeight: 200,
-        useWebWorker: false,
-        fileType: 'image/jpeg',
-        initialQuality: 0.8
       });
       expect(thumbnail).toBe(compressedFile);
     });
@@ -320,21 +318,20 @@ describe('ImageUtilsService', () => {
       const compressedBlob = new Blob(['compressed'], { type: 'image/jpeg' });
       const compressedFile = new File([compressedBlob], 'thumb.jpg', { type: 'image/jpeg' });
       
-      vi.mocked(browserImageCompression.default).mockResolvedValue(compressedFile);
+      vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(compressedFile);
 
       const thumbnail = await service.createThumbnail(mockFile, 400);
 
-      expect(browserImageCompression.default).toHaveBeenCalledWith(mockFile, {
+      expect(NativeImageCodec.compress).toHaveBeenCalledWith(mockFile, {
+        outputFormat: 'jpeg',
+        quality: 80,
         maxSizeMB: 0.1,
         maxWidthOrHeight: 400,
-        useWebWorker: false,
-        fileType: 'image/jpeg',
-        initialQuality: 0.8
       });
     });
 
     it('should throw error when thumbnail creation fails', async () => {
-      vi.mocked(browserImageCompression.default).mockRejectedValue(new Error('Compression failed'));
+      vi.spyOn(NativeImageCodec, 'compress').mockRejectedValue(new Error('Compression failed'));
 
       await expect(service.createThumbnail(mockFile)).rejects.toThrow('Failed to create thumbnail');
     });
