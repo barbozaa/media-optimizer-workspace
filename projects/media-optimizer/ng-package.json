@@ -7,9 +7,6 @@
     "CHANGELOG.md"
   ],
   "lib": {
-    "entryFile": "src/public-api.ts"
-  },
-  "allowedNonPeerDependencies": [
-    "browser-image-compression"
-  ]
+    "entryFile": "src/index.ts"
+  }
 }

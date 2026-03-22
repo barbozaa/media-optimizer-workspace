@@ -5,10 +5,10 @@
     "ng": "ng",
     "start": "ng serve",
     "build": "ng build",
-    "build:lib": "ng build media-optimizer --configuration production && rollup -c rollup.config.mjs",
-    "pack:lib": "npm run build:lib && cd dist/media-optimizer && npm pack",
+    "build:lib": "npx tsc -p projects/media-optimizer/tsconfig.lib.json && rollup -c rollup.config.mjs && node scripts/build-lib.mjs",
+    "pack:lib": "npm run build:lib && npm pack ./dist/media-optimizer --pack-destination ./dist/media-optimizer",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test"
+    "test": "npx vitest run"
   },
   "prettier": {
     "printWidth": 100,

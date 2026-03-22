@@ -73,7 +73,7 @@ export class AbortError extends MediaOptimizerError {
 }
 
 /**
- * Thrown when browser-image-compression itself fails.
+ * Thrown when image encoding fails.
  * The original error is preserved in `.cause` for full stack traceability.
  * @public
  */
@@ -148,11 +148,6 @@ export interface BaseProcessOptions {
   maxSizeMB?: number;
   /** Maximum dimension (width or height) in pixels. Default: 1920 */
   maxWidthOrHeight?: number;
-  /**
-   * @deprecated No longer used. The NativeImageCodec pipeline encodes natively
-   * on the calling thread. This option will be removed in a future major version.
-   */
-  useWebWorker?: boolean;
   /** Parallel processing limit. Default: auto-detected from hardware */
   concurrency?: number;
   /**

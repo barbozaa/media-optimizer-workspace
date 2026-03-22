@@ -20,7 +20,7 @@
 
 Formats supported: **WebP · AVIF · JPEG · PNG**
 
-Works with Angular, React, Vue, and vanilla JS. RxJS is the only runtime dependency (already included in any Angular project).
+Works with Angular, React, Vue, and plain JavaScript. **Zero runtime dependencies.**
 
 ---
 
@@ -56,11 +56,11 @@ const svc = new ImageConverterService();
 
 svc.onImagesChange(images => console.log(images));
 
-svc.convertFormat(fileList, {
+await svc.convertFormat(fileList, {
   outputFormat: 'webp',
   quality: 80,
   maxSizeMB: 1,
-}).subscribe();
+});
 ```
 
 ---
@@ -77,7 +77,7 @@ svc.convertFormat(fileList, {
 | `hasTransparency()` | — | Useful before converting PNG → JPEG |
 | `isAnimated()` | — | Detects animated GIF / WebP |
 | `sortOrder` option | — | Sort batch by file size before processing |
-| `useWebWorker` | Feature | Deprecated no-op |
+| `useWebWorker` | Feature | Removed in v2.0.1 |
 
 **Breaking change:** Encoding results will differ slightly from v1 because native codec quality curves differ from libvips. The API is otherwise unchanged, apart from method renames:
 
@@ -100,8 +100,8 @@ media-optimizer-workspace/
 │       │   └── shared/
 │       │       ├── image-codec.ts           # NativeImageCodec (OffscreenCanvas pipeline)
 │       │       ├── image-helpers.ts
-│       │       ├── image-worker.ts
 │       │       ├── lru-cache.ts
+│       │       ├── subject.ts               # Zero-dep reactive primitive
 │       │       └── types.ts
 │       └── README.md                        # API docs published to npm
 ├── angular.json
@@ -127,16 +127,16 @@ npm install
 |---|---|
 | `npm run build:lib` | Build + rollup the library into `dist/media-optimizer/` |
 | `npm run pack:lib` | Build + pack a local `.tgz` for testing |
-| `npm run test` | Run tests with Karma (Angular test runner) |
-| `npm run start` | Serve the Angular workspace app |
+| `npx vitest run` | Run the 228 tests |
+| `npx vitest --watch` | Run tests in watch mode |
 
 ### Testing
 
 ```bash
-npm run test
+npx vitest run
 ```
 
-228 tests across `image-utils.service.spec.ts`, `media-optimizer.service.spec.ts`, and `performance.bench.spec.ts`.
+228 tests across `image-utils.service.spec.ts` and `media-optimizer.service.spec.ts`.
 
 ### Publishing
 

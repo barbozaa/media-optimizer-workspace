@@ -18,7 +18,7 @@ Compress and convert images entirely in the browser — no server, no dependenci
 - **Format conversion** — WebP, AVIF, JPEG, PNG
 - **Parallel batch processing** — auto-detected concurrency, configurable
 - **Binary-search quality** — hits a target file size budget automatically
-- **Reactive state** — RxJS `BehaviorSubject` internally, exposed as framework-agnostic callbacks
+- **Reactive state** — zero-dependency callback subscriptions, no RxJS, no framework required
 - **228 tests passing**
 
 ---
@@ -28,8 +28,6 @@ Compress and convert images entirely in the browser — no server, no dependenci
 ```bash
 npm install ngx-media-optimizer
 ```
-
-**Peer dependencies (Angular only):** `@angular/core` and `@angular/common` 18–21. For React/Vue/vanilla, no peer deps are required.
 
 ---
 
@@ -54,20 +52,23 @@ import { ImageConverterService, type ImageFile } from 'ngx-media-optimizer';
   `
 })
 export class ImageUploaderComponent implements OnDestroy {
-  protected svc = inject(ImageConverterService);
+  protected readonly svc = new ImageConverterService();   // plain class — no DI needed
   protected images: ReadonlyArray<ImageFile> = [];
+  private readonly cdr = inject(ChangeDetectorRef);
   private readonly unsub = this.svc.onImagesChange(imgs => {
     this.images = imgs;
     this.cdr.markForCheck();
   });
-  private cdr = inject(ChangeDetectorRef);
 
-  onFiles(e: Event): void {
+  async onFiles(e: Event): Promise<void> {
     const files = (e.target as HTMLInputElement).files!;
-    this.svc.convertFormat(files, { outputFormat: 'webp', quality: 80 }).subscribe();
+    await this.svc.convertFormat(files, { outputFormat: 'webp', quality: 80 });
   }
 
-  ngOnDestroy(): void { this.unsub(); }
+  ngOnDestroy(): void {
+    this.unsub();
+    this.svc.destroy();
+  }
 }
 ```
 
@@ -85,9 +86,9 @@ export function ImageUploader() {
 
   useEffect(() => svc.onImagesChange(setImages), []);
 
-  function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
     if (e.target.files) {
-      svc.convertFormat(e.target.files, { outputFormat: 'webp', quality: 80 }).subscribe();
+      await svc.convertFormat(e.target.files, { outputFormat: 'webp', quality: 80 });
     }
   }
 
@@ -121,9 +122,9 @@ let unsub: (() => void) | undefined;
 onMounted(() => { unsub = svc.onImagesChange(imgs => { images.value = imgs; }); });
 onUnmounted(() => unsub?.());
 
-function onFiles(e: Event) {
+async function onFiles(e: Event) {
   const files = (e.target as HTMLInputElement).files!;
-  svc.convertFormat(files, { outputFormat: 'webp', quality: 80 }).subscribe();
+  await svc.convertFormat(files, { outputFormat: 'webp', quality: 80 });
 }
 </script>
 
@@ -154,7 +155,7 @@ Everything runs on the calling thread — there is no worker involved. `useWebWo
 
 The main service. Handles conversion, compression, state, and batch processing.
 
-### `convertFormat(files, options): Observable<void>`
+### `convertFormat(files, options): Promise<void>`
 
 Converts images to a different format.
 
@@ -163,28 +164,29 @@ import { ImageConverterService } from 'ngx-media-optimizer';
 
 const svc = new ImageConverterService();
 
-svc.convertFormat(files, {
-  outputFormat: 'webp',   // required
-  quality: 80,            // 0–100, default 80
-  maxSizeMB: 1,           // target file size budget
-  maxWidthOrHeight: 1920, // default 1920
-  concurrency: 4,         // default: auto-detected from navigator.hardwareConcurrency
-  sortOrder: 'asc',       // 'asc' | 'desc' | 'none' — sort by size before processing
-}).subscribe({
-  next: () => console.log('done'),
-  error: err => console.error(err),
-});
+try {
+  await svc.convertFormat(files, {
+    outputFormat: 'webp',   // required
+    quality: 80,            // 0–100, default 80
+    maxSizeMB: 1,           // target file size budget
+    maxWidthOrHeight: 1920, // default 1920
+    concurrency: 4,         // default: auto-detected from navigator.hardwareConcurrency
+    sortOrder: 'asc',       // 'asc' | 'desc' | 'none' — sort by size before processing
+  });
+} catch (err) {
+  console.error(err);
+}
 ```
 
-### `compressImages(files, options): Observable<void>`
+### `compressImages(files, options): Promise<void>`
 
 Same as `convertFormat` but keeps the original format.
 
 ```typescript
-svc.compressImages(files, {
+await svc.compressImages(files, {
   quality: 85,
   maxSizeMB: 0.5,
-}).subscribe();
+});
 ```
 
 ### `abortProcessing(): void`
@@ -198,6 +200,21 @@ svc.abortProcessing();
 ### `removeAllImages(): void`
 
 Clears the image list and revokes all object URLs.
+
+### `destroy(): void`
+
+Releases all resources held by the service instance. Revokes all blob URLs, clears all event listeners, and cancels pending download timers. Call this when the owning component is destroyed.
+
+```typescript
+// Angular
+ngOnDestroy(): void { this.svc.destroy(); }
+
+// React
+useEffect(() => () => svc.destroy(), []);
+
+// Vue
+onUnmounted(() => svc.destroy());
+```
 
 ### State subscriptions
 
@@ -363,8 +380,6 @@ interface BaseProcessOptions {
   quality?: number;           // 0–100, default 80
   maxSizeMB?: number;         // default 10
   maxWidthOrHeight?: number;  // default 1920
-  /** @deprecated no-op, will be removed in a future major version */
-  useWebWorker?: boolean;
   concurrency?: number;       // default: navigator.hardwareConcurrency / 2
   sortOrder?: 'asc' | 'desc' | 'none';  // default 'asc' (smallest first)
 }
@@ -402,13 +417,13 @@ interface ImageInfo {
 ```typescript
 import { ValidationError, AbortError, CompressionError } from 'ngx-media-optimizer';
 
-svc.convertFormat(files, opts).subscribe({
-  error: (err) => {
-    if (err instanceof ValidationError)  { /* invalid file */ }
-    if (err instanceof AbortError)       { /* abortProcessing() was called */ }
-    if (err instanceof CompressionError) { /* codec failure */ }
-  }
-});
+try {
+  await svc.convertFormat(files, opts);
+} catch (err) {
+  if (err instanceof ValidationError)  { /* invalid file */ }
+  if (err instanceof AbortError)       { /* abortProcessing() was called */ }
+  if (err instanceof CompressionError) { /* codec failure */ }
+}
 ```
 
 ---
@@ -417,8 +432,8 @@ svc.convertFormat(files, opts).subscribe({
 
 v2 has **one breaking change**: `browser-image-compression` has been removed as a dependency. The library now encodes natively via `OffscreenCanvas`. For most use cases this is transparent — results will be slightly different (native codec quality curves differ from libvips), but the API is unchanged.
 
-**Deprecated in v2 (no-op, kept for compat):**
-- `useWebWorker` option — safe to remove from your options objects
+**Removed in v2.0.1:**
+- `useWebWorker` option — remove it from your options objects
 
 **Renamed in v2:**
 | v1 | v2 |
@@ -444,10 +459,10 @@ cd media-optimizer-workspace
 npm install
 
 # run the 228 tests
-npx nx test media-optimizer
+npx vitest run
 
-# build
-npx nx build media-optimizer
+# build the library
+npm run build:lib
 ```
 
 ---

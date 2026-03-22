@@ -463,8 +463,9 @@ describe('ImageUtilsService', () => {
 
       const estimated = service.estimateCompressedSize(file, 90);
       
-      // Improved algorithm with power curve and size adjustment
-      expect(estimated).toBeCloseTo(1326154, -2);
+      // PNG is lossless — quality has no effect.  Without cached dims,
+      // the fallback is: file.size * PNG_EXPANSION['png'] (1.0) = 2 000 000.
+      expect(estimated).toBe(2000000);
     });
 
     it('should estimate size for WebP format', () => {
