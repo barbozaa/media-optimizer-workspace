@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-03-21
+
+### Changed
+- **Zero dependencies** — removed `browser-image-compression`. Encoding now uses the browser’s native `OffscreenCanvas.convertToBlob` API
+- **Framework-agnostic** — removed Angular (`@Injectable`) and RxJS (`BehaviorSubject`, `Observable`) from the core service; works with any JavaScript environment
+- **Promise-based API** — `convertFormat()` and `compressImages()` now return `Promise<void>` instead of `Observable<void>`
+- **Reactive state** — replaced RxJS subjects with a zero-dependency `Subject` primitive; the callback API (`onImagesChange`, `onUploadingChange`, `onProgressChange`) is unchanged
+
+### Added
+- `destroy()` lifecycle method — releases blob URLs, clears all listeners, cancels timers
+- `MediaOptimizerError` base class — catch all library errors with a single `instanceof` check
+
+### Removed
+- `useWebWorker` option (was deprecated no-op since v1.3, now fully removed)
+- Runtime dependency on `rxjs`
+- Runtime dependency on `browser-image-compression`
+
+### Migration from v1.x
+- Replace `.subscribe()` calls with `await` or `.then()/.catch()`
+- Remove `useWebWorker` from your options objects
+- If using Angular DI: either instantiate directly (`new ImageConverterService()`) or provide manually in `providers`
+
 ## [1.3.0] - 2026-02-18
 
 ### Added

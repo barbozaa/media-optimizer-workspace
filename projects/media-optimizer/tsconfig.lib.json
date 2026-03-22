@@ -1,19 +1,14 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
+    "rootDir": "src",
     "outDir": "../../out-tsc/lib",
     "declaration": true,
     "declarationMap": true,
+    "sourceMap": true,
     "inlineSources": true,
     "types": []
   },
-  "exclude": [
-    "**/*.spec.ts"
-  ],
-  "angularCompilerOptions": {
-    "skipTemplateCodegen": true,
-    "strictMetadataEmit": true,
-    "enableResourceInlining": true,
-    "compilationMode": "partial"
-  }
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts", "src/test-setup.ts"]
 }

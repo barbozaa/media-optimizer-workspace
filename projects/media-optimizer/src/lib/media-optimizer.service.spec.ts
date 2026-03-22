@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { firstValueFrom } from 'rxjs';
 import { ImageConverterService } from './media-optimizer.service';
 import type { ImageFormat, ConvertOptions, CompressOptions, ImageFile } from './media-optimizer.service';
 import { NativeImageCodec } from './shared/image-codec';
@@ -94,7 +93,7 @@ describe('ImageConverterService', () => {
       const mockCompressedFile = new File([mockBlob], 'test.webp', { type: 'image/webp' });
       vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(mockCompressedFile);
       
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+      await service.convertFormat([mockFile], { outputFormat: 'webp' });
       
       expect(callback).toHaveBeenCalled();
       expect(callback.mock.calls[callback.mock.calls.length - 1][0].length).toBe(1);
@@ -129,8 +128,8 @@ describe('ImageConverterService', () => {
       callback.mockClear();
       unsubscribe();
       
-      // Trigger a change via BehaviorSubject — callback must NOT fire after unsubscribe
-      (service as any)._isUploading$.next(true);
+      // Trigger a change — callback must NOT fire after unsubscribe
+      (service as any)._isUploading.next(true);
       
       expect(callback).not.toHaveBeenCalled();
     });
@@ -151,8 +150,8 @@ describe('ImageConverterService', () => {
       callback.mockClear();
       unsubscribe();
       
-      // Trigger a change via BehaviorSubject — callback must NOT fire after unsubscribe
-      (service as any)._uploadProgress$.next(50);
+      // Trigger a change — callback must NOT fire after unsubscribe
+      (service as any)._uploadProgress.next(50);
       
       expect(callback).not.toHaveBeenCalled();
     });
@@ -184,8 +183,8 @@ describe('ImageConverterService', () => {
       callback1.mockClear();
       callback2.mockClear();
       
-      // Trigger a change via BehaviorSubject
-      (service as any)._isUploading$.next(true);
+      // Trigger a change
+      (service as any)._isUploading.next(true);
       
       expect(callback1).toHaveBeenCalledTimes(1);
       expect(callback2).toHaveBeenCalledTimes(1);
@@ -201,8 +200,8 @@ describe('ImageConverterService', () => {
       callback1.mockClear();
       callback2.mockClear();
       
-      // Trigger a change via BehaviorSubject
-      (service as any)._uploadProgress$.next(75);
+      // Trigger a change
+      (service as any)._uploadProgress.next(75);
       
       expect(callback1).toHaveBeenCalledTimes(1);
       expect(callback2).toHaveBeenCalledTimes(1);
@@ -213,7 +212,7 @@ describe('ImageConverterService', () => {
       const unsubscribe = service.onImagesChange(callback);
       
       unsubscribe(); // first unsubscribe
-      // Calling unsubscribe again on an RxJS subscription should not throw
+      // Calling unsubscribe again is idempotent — must not throw
       expect(() => unsubscribe()).not.toThrow();
     });
 
@@ -244,18 +243,17 @@ describe('ImageConverterService', () => {
         new Promise<File>(res => { resolveCompression = res; })
       );
 
-      const batch$ = service.convertFormat([mockFile], { outputFormat: 'webp' });
-      // Subscribe to kick off processing (do NOT await — we want it in-flight)
-      const sub = batch$.subscribe({ error: () => {} });
+      // Start the batch without awaiting (keep it in-flight)
+      const batchPromise = service.convertFormat([mockFile], { outputFormat: 'webp' }).catch(() => {});
 
       // While the batch is running, _seedImages must throw
       expect(() => service._seedImages([])).toThrow(
         '[ImageConverter] _seedImages: cannot replace state while a batch is active'
       );
 
-      // Clean up: resolve the in-flight compression and unsubscribe
+      // Clean up: resolve the in-flight compression and await
       resolveCompression(new File([mockBlob], 'out.webp', { type: 'image/webp' }));
-      sub.unsubscribe();
+      await batchPromise;
     });
   });
 
@@ -330,7 +328,7 @@ describe('ImageConverterService', () => {
     });
 
     it('should convert to webp format', async () => {
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+      await service.convertFormat([mockFile], { outputFormat: 'webp' });
       
       expect(service.images.length).toBe(1);
       expect(service.images[0].status).toBe('completed');
@@ -338,14 +336,14 @@ describe('ImageConverterService', () => {
     });
 
     it('should convert to png format', async () => {
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'png' }));
+      await service.convertFormat([mockFile], { outputFormat: 'png' });
       
       expect(service.images.length).toBe(1);
       expect(service.images[0].status).toBe('completed');
     });
 
     it('should convert to jpeg format', async () => {
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'jpeg' }));
+      await service.convertFormat([mockFile], { outputFormat: 'jpeg' });
       
       expect(service.images.length).toBe(1);
       expect(service.images[0].status).toBe('completed');
@@ -356,7 +354,7 @@ describe('ImageConverterService', () => {
         new File([mockBlob], 'compressed.avif', { type: 'image/avif' })
       );
 
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'avif' }));
+      await service.convertFormat([mockFile], { outputFormat: 'avif' });
       
       expect(service.images.length).toBe(1);
       expect(service.images[0].status).toBe('completed');
@@ -368,7 +366,7 @@ describe('ImageConverterService', () => {
 
     it('should accept custom quality option', async () => {
       const options: ConvertOptions = { outputFormat: 'webp', quality: 70 };
-      await firstValueFrom(service.convertFormat([mockFile], options));
+      await service.convertFormat([mockFile], options);
       
       expect(NativeImageCodec.compress).toHaveBeenCalledWith(
         expect.anything(),
@@ -382,7 +380,7 @@ describe('ImageConverterService', () => {
       );
 
       try {
-        await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+        await service.convertFormat([mockFile], { outputFormat: 'webp' });
       } catch (error) {
         // Expected to throw
       }
@@ -395,13 +393,13 @@ describe('ImageConverterService', () => {
     it('should handle multiple files', async () => {
       const file2 = new File([mockBlob], 'test2.jpg', { type: 'image/jpeg' });
       
-      await firstValueFrom(service.convertFormat([mockFile, file2], { outputFormat: 'webp' }));
+      await service.convertFormat([mockFile, file2], { outputFormat: 'webp' });
       
       expect(service.images.length).toBe(2);
     });
 
     it('should update completedImages computed signal', async () => {
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+      await service.convertFormat([mockFile], { outputFormat: 'webp' });
       
       expect(service.completedImages.length).toBe(1);
       expect(service.completedCount).toBe(1);
@@ -417,7 +415,7 @@ describe('ImageConverterService', () => {
     });
 
     it('should compress images with default options', async () => {
-      await firstValueFrom(service.compressImages([mockFile]));
+      await service.compressImages([mockFile]);
       
       expect(service.images.length).toBe(1);
       expect(service.images[0].status).toBe('completed');
@@ -430,7 +428,7 @@ describe('ImageConverterService', () => {
         maxWidthOrHeight: 1024
       };
       
-      await firstValueFrom(service.compressImages([mockFile], options));
+      await service.compressImages([mockFile], options);
       
       expect(NativeImageCodec.compress).toHaveBeenCalledWith(
         expect.anything(),
@@ -443,19 +441,19 @@ describe('ImageConverterService', () => {
     });
 
     it('should calculate totalOriginalSize', async () => {
-      await firstValueFrom(service.compressImages([mockFile]));
+      await service.compressImages([mockFile]);
       
       expect(service.totalOriginalSize).toBeGreaterThan(0);
     });
 
     it('should calculate totalCompressedSize', async () => {
-      await firstValueFrom(service.compressImages([mockFile]));
+      await service.compressImages([mockFile]);
       
       expect(service.totalCompressedSize).toBeGreaterThan(0);
     });
 
     it('should calculate savingsPercentage', async () => {
-      await firstValueFrom(service.compressImages([mockFile]));
+      await service.compressImages([mockFile]);
       
       expect(service.savingsPercentage).toBeGreaterThanOrEqual(0);
     });
@@ -466,7 +464,7 @@ describe('ImageConverterService', () => {
       );
 
       try {
-        await firstValueFrom(service.compressImages([mockFile]));
+        await service.compressImages([mockFile]);
       } catch (error) {
         // Expected to throw
       }
@@ -483,35 +481,35 @@ describe('ImageConverterService', () => {
       );
     });
 
-    it('isUploading$ should be true while processing and false after completion', async () => {
+    it('isUploading should be true while processing and false after completion', async () => {
       const uploadingValues: boolean[] = [];
-      const sub = service.isUploading$.subscribe(v => uploadingValues.push(v));
+      const unsub = service.onUploadingChange(v => uploadingValues.push(v));
 
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
-      sub.unsubscribe();
+      await service.convertFormat([mockFile], { outputFormat: 'webp' });
+      unsub();
 
       // Initial false, then true during processing, then false again after finalize
       expect(uploadingValues).toContain(true);
       expect(uploadingValues[uploadingValues.length - 1]).toBe(false);
     });
 
-    it('uploadProgress$ should reach 100 after all files complete', async () => {
+    it('uploadProgress should reach 100 after all files complete', async () => {
       const progressValues: number[] = [];
-      const sub = service.uploadProgress$.subscribe(v => progressValues.push(v));
+      const unsub = service.onProgressChange(v => progressValues.push(v));
 
-      await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
-      sub.unsubscribe();
+      await service.convertFormat([mockFile], { outputFormat: 'webp' });
+      unsub();
 
       // Should have hit 100 during processing, then reset to 0
       expect(progressValues).toContain(100);
       expect(progressValues[progressValues.length - 1]).toBe(0);
     });
 
-    it('isUploading$ should reset to false when processing errors out', async () => {
+    it('isUploading should reset to false when processing errors out', async () => {
       vi.spyOn(NativeImageCodec, 'compress').mockRejectedValue(new Error('Compression failed'));
 
       try {
-        await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+        await service.convertFormat([mockFile], { outputFormat: 'webp' });
       } catch {
         // error is expected
       }
@@ -519,11 +517,11 @@ describe('ImageConverterService', () => {
       expect(service.isUploading).toBe(false);
     });
 
-    it('uploadProgress$ should reset to 0 when processing errors out', async () => {
+    it('uploadProgress should reset to 0 when processing errors out', async () => {
       vi.spyOn(NativeImageCodec, 'compress').mockRejectedValue(new Error('Compression failed'));
 
       try {
-        await firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp' }));
+        await service.convertFormat([mockFile], { outputFormat: 'webp' });
       } catch {
         // error is expected
       }
@@ -536,12 +534,7 @@ describe('ImageConverterService', () => {
     it('should handle empty file array in convertFormat', async () => {
       const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       
-      const obs$ = service.convertFormat([], { outputFormat: 'webp' });
-      let completed = false;
-      obs$.subscribe({
-        complete: () => { completed = true; }
-      });
-      expect(completed).toBe(true);
+      await service.convertFormat([], { outputFormat: 'webp' });
       expect(service.images.length).toBe(0);
       
       consoleWarnSpy.mockRestore();
@@ -550,33 +543,26 @@ describe('ImageConverterService', () => {
     it('should handle empty file array in compressImages', async () => {
       const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       
-      const obs$ = service.compressImages([]);
-      let completed = false;
-      obs$.subscribe({
-        complete: () => { completed = true; }
-      });
-      expect(completed).toBe(true);
+      await service.compressImages([]);
       expect(service.images.length).toBe(0);
       
       consoleWarnSpy.mockRestore();
     });
 
-    it('should handle PNG file type detection', () => {
+    it('should handle PNG file type detection', async () => {
       const pngFile = new File([mockBlob], 'test.png', { type: 'image/png' });
       vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(pngFile);
       
-      return firstValueFrom(service.compressImages([pngFile])).then(() => {
-        expect(service.images[0]).toBeDefined();
-      });
+      await service.compressImages([pngFile]);
+      expect(service.images[0]).toBeDefined();
     });
 
-    it('should handle WebP file type detection', () => {
+    it('should handle WebP file type detection', async () => {
       const webpFile = new File([mockBlob], 'test.webp', { type: 'image/webp' });
       vi.spyOn(NativeImageCodec, 'compress').mockResolvedValue(webpFile);
       
-      return firstValueFrom(service.compressImages([webpFile])).then(() => {
-        expect(service.images[0]).toBeDefined();
-      });
+      await service.compressImages([webpFile]);
+      expect(service.images[0]).toBeDefined();
     });
 
     it('should handle file name without extension', async () => {
@@ -585,7 +571,7 @@ describe('ImageConverterService', () => {
         new File([mockBlob], 'compressed.webp', { type: 'image/webp' })
       );
       
-      await firstValueFrom(service.convertFormat([file], { outputFormat: 'webp' }));
+      await service.convertFormat([file], { outputFormat: 'webp' });
       
       expect(service.images[0].name).toContain('.webp');
     });
@@ -929,25 +915,25 @@ describe('ImageConverterService', () => {
   describe('Validation', () => {
     it('should throw for quality below 0 in convertFormat', async () => {
       await expect(
-        firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp', quality: -1 }))
+        service.convertFormat([mockFile], { outputFormat: 'webp', quality: -1 })
       ).rejects.toThrow('quality must be 0');
     });
 
     it('should throw for quality above 100 in convertFormat', async () => {
       await expect(
-        firstValueFrom(service.convertFormat([mockFile], { outputFormat: 'webp', quality: 101 }))
+        service.convertFormat([mockFile], { outputFormat: 'webp', quality: 101 })
       ).rejects.toThrow('quality must be 0');
     });
 
     it('should throw for quality below 0 in compressImages', async () => {
       await expect(
-        firstValueFrom(service.compressImages([mockFile], { quality: -5 }))
+        service.compressImages([mockFile], { quality: -5 })
       ).rejects.toThrow('quality must be 0');
     });
 
     it('should throw for quality above 100 in compressImages', async () => {
       await expect(
-        firstValueFrom(service.compressImages([mockFile], { quality: 200 }))
+        service.compressImages([mockFile], { quality: 200 })
       ).rejects.toThrow('quality must be 0');
     });
 
@@ -956,7 +942,7 @@ describe('ImageConverterService', () => {
       const pdf2 = new File([mockBlob], 'b.pdf', { type: 'application/pdf' });
 
       await expect(
-        firstValueFrom(service.convertFormat([pdf1, pdf2], { outputFormat: 'webp' }))
+        service.convertFormat([pdf1, pdf2], { outputFormat: 'webp' })
       ).rejects.toSatisfy((err: Error) => {
         return err.message.includes('a.pdf') && err.message.includes('b.pdf');
       });
@@ -971,9 +957,7 @@ describe('ImageConverterService', () => {
         return new File([mockBlob], 'done.webp', { type: 'image/webp' });
       });
 
-      await firstValueFrom(
-        service.convertFormat([mockFile], { outputFormat: 'webp', concurrency: 1 })
-      );
+      await service.convertFormat([mockFile], { outputFormat: 'webp', concurrency: 1 });
 
       expect(capturedSignal).toBeInstanceOf(AbortSignal);
     });
@@ -991,9 +975,7 @@ describe('ImageConverterService', () => {
       const file2 = new File([mockBlob], 'b.jpg', { type: 'image/jpeg' });
 
       try {
-        await firstValueFrom(
-          service.convertFormat([mockFile, file2], { outputFormat: 'webp', concurrency: 1 })
-        );
+        await service.convertFormat([mockFile, file2], { outputFormat: 'webp', concurrency: 1 });
       } catch {
         // aborted error is expected for the second file
       }

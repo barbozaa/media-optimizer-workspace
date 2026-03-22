@@ -1,4 +1,3 @@
-import { Injectable } from '@angular/core';
 import { NativeImageCodec } from './shared/image-codec';
 import { ImageHelpers } from './shared/image-helpers';
 import { LRUCache } from './shared/lru-cache';
@@ -38,11 +37,7 @@ export type { ImageFormat, ImageInfo };
  * ```
  * 
  * @public
- * @injectable
  */
-@Injectable({
-  providedIn: 'root'
-})
 export class ImageUtilsService {
 
   // ============================================================================
