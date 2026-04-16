@@ -1,0 +1,45 @@
+{
+  "name": "mcp-media-optimizer",
+  "version": "1.0.0",
+  "description": "MCP server for image compression and analysis — compress, convert and analyze images via WebP, AVIF, JPEG, PNG using Sharp",
+  "type": "module",
+  "bin": {
+    "mcp-media-optimizer": "./dist/index.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "image",
+    "compression",
+    "optimizer",
+    "sharp",
+    "webp",
+    "avif",
+    "jpeg",
+    "png",
+    "ai",
+    "claude"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.2",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
